@@ -1,21 +1,25 @@
 """Async PostgreSQL connectivity foundation.
 
-Phase 1 only establishes the ability to open a connection and reuse it
-for a readiness check. Schema/ORM models and session-per-request
-dependency wiring belong to Phase 2, once the application tables exist.
+Owns the process-wide async engine/sessionmaker and exposes:
+
+- ``init_engine`` / ``dispose_engine`` - lifecycle hooks called from the
+  FastAPI ``lifespan`` in ``app.main``.
+- ``check_database_connection`` - used by the ``/health/ready`` endpoint.
+- ``get_db`` - a FastAPI dependency yielding a request-scoped
+  ``AsyncSession``. Tests override this dependency to point at an
+  in-memory SQLite database instead of a real PostgreSQL instance.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import Settings
 
 _engine: AsyncEngine | None = None
-_sessionmaker: async_sessionmaker | None = None
+_sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
 def init_engine(settings: Settings) -> AsyncEngine:
@@ -47,9 +51,8 @@ async def check_database_connection() -> bool:
         return False
 
 
-@asynccontextmanager
-async def get_session() -> AsyncIterator:
-    """Yield a database session. Reserved for Phase 2 request handlers."""
+async def get_db() -> AsyncIterator[AsyncSession]:
+    """FastAPI dependency yielding a request-scoped database session."""
     if _sessionmaker is None:
         raise RuntimeError("Database engine has not been initialized")
     async with _sessionmaker() as session:

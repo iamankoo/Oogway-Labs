@@ -1,19 +1,20 @@
 # Design Foundations
 
-**Status:** Phase 1. Describes the visual and interaction system actually implemented in `frontend/`, not aspirational later-phase UI (chat bubbles, artifact rendering, citations) which will extend this document as it ships.
+**Status:** Phase 1 + Phase 2. Describes the visual and interaction system actually implemented in `frontend/`, not aspirational later-phase UI (streamed assistant responses, artifact rendering, real source citations) which will extend this document as it ships.
 
 ## Visual direction
 
-The product should read as a serious productivity tool, not a demo chatbot. Concretely, that meant deliberately avoiding:
+The product should read as a serious productivity tool with a distinct editorial identity - not a demo chatbot, and not a generic ChatGPT clone. Concretely, that meant deliberately avoiding:
 
 - Purple/blue gradient "AI startup" hero treatments.
 - Oversized rounded chat bubbles and cartoonish avatars.
 - Decorative animation that doesn't communicate state.
+- A literal audio-player UI as the nod to "podcast" - the product is about the *knowledge*, not about playing episodes.
 
 And deliberately choosing:
 
-- A neutral slate/warm-white base palette with a single confident accent (a deep teal/green, `--color-primary`), used sparingly for primary actions and active states - closer to the restraint of tools like Linear or Notion than to a consumer AI product.
-- System font stack (`ui-sans-serif, system-ui, ...`) for fast, native-feeling text rendering without an external font request.
+- A neutral slate/warm-white base palette with a single confident accent (a deep teal/green, `--color-primary`), used sparingly for primary actions and active states - closer to the restraint of tools like Linear or Notion than to a consumer AI product. Validated against the UI Pro Max design-system tool's "Productivity Tool" palette match (teal primary + orange-adjacent accent family), rather than its default landing-page suggestion (an indigo/purple "Dark Mode (OLED)" pattern), which would have reintroduced the exact generic-AI-startup look the brief asks to avoid.
+- A second, editorial display typeface (Fraunces, a soft-serif) layered on top of the Inter-based UI sans, used sparingly for moments that should feel written rather than "app-generated": the empty-state headline, the sidebar wordmark, and source-card episode titles. This follows the "Classic Elegant" serif+sans pairing pattern (serif headline, sans UI) rather than going all-serif, which would fight the density a chat/sidebar UI needs.
 - Flat surfaces with a single subtle border/shadow language rather than heavy glassmorphism or skeuomorphism.
 
 ## Design tokens
@@ -22,39 +23,62 @@ All colors are defined as HSL channel triples in CSS custom properties (`fronten
 
 - Every color has a light-mode value on `:root` and a dark-mode override, both under `@media (prefers-color-scheme: dark)` and under an explicit `[data-theme="dark"]` attribute set by the in-app theme toggle.
 - Components never hard-code hex values - they use semantic Tailwind classes like `bg-surface`, `text-muted`, `border-border` that resolve through the tokens.
-- Radii (`--radius-sm` through `--radius-xl`) and the two font stacks (`--font-sans`, `--font-mono`) are tokenized the same way, so a future rebrand is a token edit, not a find-and-replace across components.
+- Radii (`--radius-sm` through `--radius-xl`), the two font stacks (`--font-sans`, `--font-mono`), and the Phase 2 editorial stack (`--font-serif`) are tokenized the same way, so a future rebrand is a token edit, not a find-and-replace across components.
+- `--font-serif` (Fraunces, loaded via Google Fonts with `display=swap` so it never blocks text rendering) is applied narrowly via `font-serif` utility classes - it is not the default body font anywhere.
 
 ## UX principles
 
-1. **Never fake functionality.** Where a feature isn't implemented yet (sending a message, viewing an artifact), the UI says so explicitly (tooltip, empty-state copy) rather than silently doing nothing or pretending to work.
-2. **Every state is designed, not accidental.** Empty, loading, disabled, and error states are first-class components (`EmptyState`, `Spinner`, disabled variants on `Button`/`Textarea`), not afterthoughts.
-3. **Restraint over decoration.** Transitions are short (150-200ms) opacity/color changes tied to real state changes (hover, focus, open/close) - no motion added purely for spectacle.
+1. **Never fake functionality.** Where a feature isn't implemented yet (an assistant reply, an artifact), the UI says so explicitly (composer helper text, empty-state copy) rather than silently doing nothing or pretending to work. Suggested prompts are clearly interactive UI chips, not answers - clicking one populates the composer, it never displays canned "AI" output.
+2. **Every state is designed, not accidental.** Empty, loading, disabled, and error states are first-class components (`EmptyState`, `Skeleton`, `Spinner`), not afterthoughts - see "Loading and error states" below for the full inventory now that the sidebar and conversation are backed by real network requests.
+3. **Restraint over decoration.** Transitions are short (150-200ms) opacity/color changes tied to real state changes (hover, focus, open/close, active session) - no motion added purely for spectacle.
+
+## Editorial / podcast identity
+
+Because the product is grounded in podcast/newsletter knowledge, a few restrained visual cues carry that identity without fabricating content that doesn't exist yet:
+
+- **`WaveformIcon`** (`components/ui/waveform-icon.tsx`): a small, static bar-equalizer glyph used in the empty state instead of a generic sparkle/star icon. It's deliberately not animated and not a media control - it reads as an icon, not as "press play."
+- **`SourceCard`** (`components/ui/source-card.tsx`): the visual foundation for a future episode/newsletter citation (title, guest, source type, excerpt, link). It is built but **not rendered anywhere in Phase 2** - there is no retrieved source data yet, and the component takes no default props, so it can't be accidentally wired up with placeholder/fabricated episode content. Phase 4 connects it to real retrieval results.
+- **Empty-state copy** ("Product thinking, growth, and leadership - in conversation") frames the product around expert conversations without claiming a specific episode, guest, or quote exists yet.
 
 ## Information architecture
 
-Three-pane shell, reflecting the target product (conversational assistant + artifact viewer) from day one, even though the middle two panes are placeholders in Phase 1:
+Three-pane shell, reflecting the target product (conversational assistant + artifact viewer):
 
-- **Left - Navigation**: product identity, "new conversation," conversation history (empty state today), and secondary navigation (knowledge base, settings - both marked "Later phase" and disabled) plus the theme toggle.
-- **Center - Chat workspace**: welcome/empty state with suggested prompts (fill the composer, do not send), and the message composer itself.
-- **Right - Artifact panel**: reserved, styled, and labeled for the artifact viewer that ships in a later phase, so it never feels bolted on when it arrives.
+- **Left - Navigation**: product identity, "New conversation," and now a **real conversation history** grouped into Today / Yesterday / Earlier (`lib/session-grouping.ts`), each item showing its title and a relative timestamp, with an active-session indicator. Secondary navigation (knowledge base, settings - both marked "Later phase" and disabled) and the theme toggle remain below it.
+- **Center - Chat workspace**: the product-specific welcome state (with suggested prompts) when no conversation is active, or the message log + composer for the active conversation. Switching sessions swaps this content instantly - see "Frontend state model" in `docs/architecture.md` for how stale messages are prevented from flashing during the switch.
+- **Right - Artifact panel**: still reserved and styled for the artifact viewer that ships in Phase 5 - unchanged from Phase 1, so it doesn't feel bolted on whenever it arrives.
 
 ## Responsive strategy
 
-Built mobile-first with Tailwind's `lg` (1024px) breakpoint as the split between "all three panes visible" and "single-column with slide-over panels":
+Unchanged from Phase 1, still built mobile-first with Tailwind's `lg` (1024px) breakpoint as the split between "all three panes visible" and "single-column with slide-over panels":
 
-- **Desktop (≥1024px)**: sidebar, chat, and artifact panel all visible simultaneously in a fixed three-column grid. The artifact panel can be collapsed via a header toggle to give the conversation more room.
-- **Tablet / mobile (<1024px)**: sidebar and artifact panel become accessible Radix `Dialog`-based slide-over sheets, triggered from a header hamburger and panel-toggle button respectively, so navigation and artifact access remain one tap away without permanently consuming screen space from the conversation.
+- **Desktop (≥1024px)**: sidebar, chat, and artifact panel all visible simultaneously. The artifact panel can be collapsed via a header toggle to give the conversation more room.
+- **Tablet / mobile (<1024px)**: sidebar and artifact panel become accessible Radix `Dialog`-based slide-over sheets, triggered from a header hamburger and panel-toggle button respectively. The sidebar sheet now carries real, scrollable session history rather than a static empty state, and selecting a session or starting a new one closes the sheet automatically so the conversation is immediately visible.
+
+## Loading and error states
+
+Every network-backed surface has three states beyond its populated one, per the UI Pro Max loading-feedback guidance (stable skeletons over spinners for content the user is about to read, disable-and-spin for buttons that trigger a single action):
+
+| Surface | Loading | Empty | Error |
+|---|---|---|---|
+| Sidebar session list | Three pulsing `Skeleton` rows | "No conversations yet" | "Couldn't load conversations" + Try again |
+| Conversation (messages) | Three pulsing message-shaped `Skeleton`s | "This conversation is empty" | "Couldn't load this conversation" + Try again |
+| Sending a message | Composer's send button shows a spinner and disables; the textarea disables to prevent a second submit mid-flight | n/a | An inline `role="alert"` message under the composer ("Your message couldn't be sent. Please try again.") and the drafted text is restored so nothing is lost |
+
+None of these states leak a stack trace or raw HTTP status - `lib/api.ts`'s `ApiError` always carries the backend's safe, human-readable message from the shared error envelope, with a generic fallback for network failures the backend never got to respond to.
 
 ## Accessibility principles
 
-- All interactive elements are real `<button>`/`<input>`/`<textarea>` elements with visible `:focus-visible` rings (a 2px ring using the `--color-ring` token, contrast-checked against both themes).
-- Icon-only buttons (hamburger, panel toggle, dialog close) carry `aria-label`; toggle buttons expose `aria-pressed` where they represent a binary state.
+- All interactive elements are real `<button>`/`<input>`/`<textarea>` elements with visible `:focus-visible` rings (a 2px ring using the `--color-ring` token, contrast-checked against both themes) - including every session item in the sidebar, which is a real `<button>` with `aria-current="true"` when active, not a styled `<div>`.
+- Icon-only buttons (hamburger, panel toggle, dialog close, send) carry `aria-label`; toggle buttons expose `aria-pressed` where they represent a binary state.
 - The mobile sidebar/artifact sheets are Radix `Dialog` primitives, which provide focus trapping, `Escape`-to-close, and `aria-modal` semantics for free; each sheet has a (visually hidden) `DialogTitle` so screen readers announce its purpose.
-- Disabled controls (e.g. the send button) remain perceivable and explain themselves via an accessible tooltip rather than disappearing or offering no explanation.
-- Color is never the only signal: status badges pair a dot with text; disabled state pairs reduced opacity with `disabled`/`aria-disabled` semantics.
+- The message log is a `role="log"` region with `aria-live="polite"` so a screen reader announces new messages as they're sent, without re-announcing the entire history.
+- Send-failure feedback uses `role="alert"` so assistive technology picks it up immediately, matching the composer's honest-about-failure principle above.
+- Color is never the only signal: the active session is marked with both a background tint *and* a left accent border *and* `aria-current`; status badges pair a dot with text.
 
 ## Interaction quality
 
-- **Composer**: always typeable; suggested prompts populate it directly so the empty state and the composer feel connected, not like two separate widgets.
-- **Send button**: disabled with an explanatory tooltip ("Sending connects once the agent layer ships in a later phase") - honest about Phase 1 scope rather than simulating a response.
+- **Composer**: always typeable, including from the empty state - sending with no active conversation transparently creates one first (see `ConversationsProvider.sendMessage` in `docs/architecture.md`), so there's no artificial "click New conversation first" requirement. `Enter` sends, `Shift+Enter` inserts a newline.
+- **Send button**: disabled only when there's nothing to send or a send is already in flight (spinner shown) - no longer permanently disabled the way it was in Phase 1, since sending now really persists a message. The helper text under the composer is still explicit that no assistant reply will appear yet.
+- **Suggested prompts**: clicking one fills the composer (creating a session first if needed) rather than displaying a pretend answer - consistent with "never fake functionality" above.
 - **Panel toggles**: desktop artifact-panel collapse and mobile sheets both use the same underlying components (`Dialog` for mobile, conditional render for desktop), keeping the codebase from needing two separate systems for "showing" a panel.

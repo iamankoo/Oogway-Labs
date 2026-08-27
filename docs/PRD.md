@@ -1,6 +1,6 @@
 # Product Requirements Document: Lenny Growth Assistant
 
-**Status:** Foundational draft, written during Phase 1. Scope, flows, and metrics will be refined as later phases (retrieval, Ship 30 for 30, artifacts) are implemented.
+**Status:** Foundational draft, written during Phase 1, updated after Phase 2 (persistence + conversation UI). Scope, flows, and metrics will be refined as later phases (retrieval, Ship 30 for 30, artifacts) are implemented.
 
 ## Problem
 
@@ -33,8 +33,8 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 
 | Phase | Scope |
 |-------|-------|
-| 1 (this phase) | Architecture, FastAPI + React foundation, Docker Compose, health/readiness, design system, docs |
-| 2 | PostgreSQL schema for conversations/messages, persistence layer |
+| 1 (done) | Architecture, FastAPI + React foundation, Docker Compose, health/readiness, design system, docs |
+| 2 (this phase) | PostgreSQL schema for users/conversations/messages, Alembic migrations, conversation API, real session/message persistence wired into a redesigned conversation UI |
 | 3 | Agent orchestration, model-provider abstraction (Ollama + cloud) |
 | 4 | Lenny transcript ingestion/RAG (Grounded QA), Ship 30 for 30 skill |
 | 5 | Artifact generation and a sanitized artifact viewer |
@@ -48,18 +48,27 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 - Mobile native apps (the web frontend is responsive, not a separate mobile app).
 - Support for arbitrary third-party knowledge sources beyond Lenny's content.
 
-## Core user flows (target end state, not yet implemented)
+## Core user flows
 
-1. **Grounded Q&A**: user asks a product/growth question → assistant retrieves relevant transcript passages → assistant answers with citations back to source material.
-2. **Ship 30 for 30**: user requests a 30-day shipping plan for a stated goal → assistant produces a structured, day-by-day artifact.
-3. **Artifact review**: user asks for a framework or document → assistant generates it as an artifact in the right-hand panel, which the user can review and export.
+1. **Start and persist a conversation** (Phase 2, implemented): user starts a new conversation, sends a message, refreshes the browser, and finds both the conversation and the message exactly as they left them - no assistant reply yet, by design.
+2. **Grounded Q&A** (target end state, not yet implemented): user asks a product/growth question → assistant retrieves relevant transcript passages → assistant answers with citations back to source material.
+3. **Ship 30 for 30** (not yet implemented): user requests a 30-day shipping plan for a stated goal → assistant produces a structured, day-by-day artifact.
+4. **Artifact review** (not yet implemented): user asks for a framework or document → assistant generates it as an artifact in the right-hand panel, which the user can review and export.
 
-## Acceptance criteria (Phase 1 only)
+## Acceptance criteria (Phase 1)
 
 - `docker compose up --build` starts backend, frontend, PostgreSQL, and Ollama without manual intervention beyond copying `.env.example`.
 - `/health` and `/health/ready` behave as documented in `README.md`.
 - The frontend renders a complete, responsive, accessible application shell with realistic empty/loading/disabled states, without pretending chat or artifacts work yet.
 - No secrets are committed; all configuration is environment-driven.
+
+## Acceptance criteria (Phase 2)
+
+- Creating a conversation, sending a message, and refreshing the page all work against real PostgreSQL persistence - no local-only/in-memory state stands in for the backend.
+- Two different conversations never leak each other's messages, enforced in the backend's data-access layer (not just by the frontend not asking).
+- The schema is versioned with Alembic, applied automatically when the backend container starts - no manual `create_all` step for the evaluator to run.
+- No assistant reply is fabricated anywhere in the UI or API - the composer, message list, and API responses are all honest that only the user's own message was saved.
+- The conversation UI is judged as a deliberate, premium, product-specific design - not a generic chatbot template - per the design principles in `docs/design.md`.
 
 ## Risks and trade-offs
 

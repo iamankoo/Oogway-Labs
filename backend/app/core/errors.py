@@ -46,6 +46,11 @@ class NotFoundError(AppError):
     message = "The requested resource was not found."
 
 
+class SessionNotFoundError(NotFoundError):
+    code = "session_not_found"
+    message = "The requested conversation was not found."
+
+
 class ConfigurationError(AppError):
     code = "configuration_error"
     status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
