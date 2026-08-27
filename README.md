@@ -5,14 +5,13 @@ An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews
 ## What exists today (Phase 1-5)
 
 - A FastAPI backend with typed configuration, structured logging, centralized error handling, and `/health` / `/health/ready` endpoints (readiness now also checks the active model provider).
-- Real PostgreSQL persistence for conversations: `users` -> `sessions` -> `messages`, plus an `artifacts` table reserved for Phase 5, and (Phase 4) `knowledge_documents` / `knowledge_chunks` / `message_sources` for the knowledge base - all managed through Alembic migrations (see [Database](#database) below).
+- Real PostgreSQL persistence for conversations: `users` -> `sessions` -> `messages`, plus `artifacts` (Phase 5: Ship 30 essays / Markdown / HTML docs) and (Phase 4) `knowledge_documents` / `knowledge_chunks` / `message_sources` for the knowledge base - all managed through Alembic migrations (see [Database](#database) below).
 - **A real agent layer** (`backend/app/agents/`) built on **Pi Coding Agent** (`pi-coding-agent`, the required agent framework - see `docs/architecture.md` "Agent framework choice") that retrieves grounding material for each turn, folds it into a real `pi_agent.agent.Agent`'s system prompt, and calls a **model provider abstraction** (`pi_agent.llm`) supporting both a local **Ollama** provider (mandatory for the demo) and a **cloud Anthropic Claude** provider, switchable purely via configuration - see [Model provider](#model-provider) below.
 - **A real knowledge base** (`backend/app/knowledge/`, `backend/app/services/knowledge_retriever.py`), ingested from the official free [Lenny's Data](https://github.com/LennysNewsletter/lennys-newsletterpodcastdata) starter pack (50 podcast transcripts + 10 newsletter posts) - see [Knowledge base](#knowledge-base) below for setup, ingestion, and how retrieval/grounding works.
 - Sending a message triggers a real assistant reply: the user's message is always persisted, the agent retrieves relevant Lenny material and generates a reply, and on success both the reply and its real (never fabricated) source citations are persisted - on failure, the user's message is kept and a safe, retryable error is returned instead of a fabricated response.
 - A React + TypeScript + Tailwind frontend with a premium, editorially-inflected three-pane product shell, a real session sidebar, a subtle provider indicator, safe Markdown-rendered assistant messages, a restrained "thinking" state, inline retry on generation failure, and (Phase 4) real `SourceCard`s shown under a grounded assistant reply.
-- Docker Compose orchestrating the backend, frontend, PostgreSQL, and Ollama for local development, with the backend running pending migrations automatically on boot. Knowledge-base ingestion is a separate, explicit, documented command - never part of `docker compose up`.
-
 - **Ship 30 essays and artifacts** (`backend/app/services/artifact_generation.py`): three actions in the Artifact Viewer - "Ship 30 Essay" (a grounded, hook-first essay), "Markdown doc" (a structured summary), and "HTML page" (a self-contained document) - each grounded through the same Phase 4 retrieval, persisted as `Artifact` rows, and rendered natively beside the chat. Generated HTML renders only inside a fully sandboxed, script-free iframe (`sandbox=""`) - see [Artifacts and HTML security](#artifacts-and-html-security) below.
+- Docker Compose orchestrating the backend, frontend, PostgreSQL, and Ollama for local development, with the backend running pending migrations automatically on boot. Knowledge-base ingestion is a separate, explicit, documented command - never part of `docker compose up`.
 
 **Not yet implemented (see "Known limitations" below):** Retrieval is lexical (BM25), not semantic/vector search - see `docs/architecture.md` "Retrieval strategy" for that tradeoff. On the mandatory CPU-only local demo, Ship 30 essays run shorter (~500-600 words) than the ~1,250-word target due to practical latency limits - see `docs/architecture.md` "Ship 30 / content generation and artifacts".
 
@@ -88,6 +87,29 @@ curl -s -X POST "http://localhost:8000/api/sessions/$SESSION_ID/messages" \
 ```
 
 A healthy response includes both `"message"` (your question, persisted) and `"assistant_message"` (a real reply from the configured model). If `"assistant_message"` is `null`, check `"generation_error"` - most commonly it means the configured Ollama model isn't pulled yet (see above).
+
+## Quick start (full path, evaluator-friendly)
+
+1. `git clone` this repo and `cd` into it.
+2. `cp .env.example .env` (safe defaults; no secrets required for the Ollama path).
+3. `docker compose up --build` - starts `frontend`, `backend`, `postgres`, `ollama`.
+4. `docker compose exec ollama ollama pull llama3.2:3b` (mandatory, one-time - see above).
+5. Ingest the knowledge base (mandatory for grounded answers - see [Knowledge base](#knowledge-base) for the clone step this depends on):
+   ```bash
+   docker compose exec backend python -m app.knowledge.ingest --source /path/to/knowledge_source
+   curl http://localhost:8000/api/knowledge/status   # confirm document_count/chunk_count > 0
+   ```
+6. Open http://localhost:5173.
+
+### Demo script
+
+1. **Ask a supported question** - e.g. *"What makes a strong product onboarding experience?"* → expect a grounded answer with real `SourceCard`s ("Grounded in Lenny's Podcast · N sources") citing an actual episode/guest.
+2. **Ask a follow-up** - e.g. *"How does that change for a B2B product?"* → expect the reply to build on the prior turn, with its own (possibly different) sources.
+3. **Ask an unsupported question** - e.g. *"What is the best way to cook a lasagna?"* → expect no source cards and an honest answer that doesn't claim Lenny grounding.
+4. **Generate a Ship 30 essay** - click "Ship 30 Essay" in the Artifact Viewer → expect a grounded, hook-first essay with headings/bullets, shown beside the chat (CPU-only local inference: allow 1-2+ minutes; see [Known limitations](#known-limitations-intentionally-deferred) for the local word-count tradeoff).
+5. **Generate a Markdown doc and an HTML page** - click each action → expect real, persisted artifacts; the HTML one renders inside a sandboxed, script-free preview.
+6. **Refresh the browser** - the conversation, its sources, and its artifacts should all still be there.
+7. **Open a second conversation** - confirm it never shows the first conversation's messages/sources/artifacts.
 
 Open http://localhost:5173 to use the app: create a conversation, send a message, watch the assistant actually reply, refresh the page, and confirm both messages are still there.
 
