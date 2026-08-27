@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     knowledge_top_k: int = 4
     knowledge_min_relevance: float = 0.5
 
+    # --- Content generation (Phase 5: Ship 30 / artifacts) ----------------
+    # Higher than model_timeout_seconds: a ~1,250-word essay or a full
+    # HTML/CSS document needs materially more output tokens than a chat
+    # reply, which takes longer on CPU-only local inference - see
+    # docs/architecture.md "Ship 30 / artifact generation timeouts".
+    artifact_timeout_seconds: float = 180.0
+
     # --- Frontend --------------------------------------------------------
     frontend_url: str = "http://localhost:5173"
 

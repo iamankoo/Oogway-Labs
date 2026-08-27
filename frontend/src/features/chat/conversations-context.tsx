@@ -10,7 +10,7 @@ import {
 } from "react";
 
 import { api, ApiError } from "@/lib/api";
-import type { GenerationError, Message, ProviderStatus, Session } from "@/lib/types";
+import type { Artifact, ArtifactKind, GenerationError, Message, ProviderStatus, Session } from "@/lib/types";
 
 const ACTIVE_SESSION_STORAGE_KEY = "lenny-active-session-id";
 
@@ -41,6 +41,12 @@ interface ConversationsState {
   retryGeneration: () => Promise<void>;
   retryLoadSessions: () => void;
   retryLoadMessages: () => void;
+  artifacts: Artifact[];
+  activeArtifactId: string | null;
+  selectArtifact: (artifactId: string | null) => void;
+  isGeneratingArtifact: boolean;
+  artifactGenerationError: string | null;
+  generateArtifact: (kind: ArtifactKind, topic?: string) => Promise<void>;
 }
 
 const ConversationsContext = createContext<ConversationsState | null>(null);
@@ -90,6 +96,11 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
   const [generationError, setGenerationError] = useState<PendingGenerationError | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
+
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
+  const [isGeneratingArtifact, setIsGeneratingArtifact] = useState(false);
+  const [artifactGenerationError, setArtifactGenerationError] = useState<string | null>(null);
 
   // A brand-new session is known to have zero messages - skip the network
   // round-trip for it so a message sent immediately after creation can't
@@ -174,6 +185,31 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [activeSessionId, messagesReloadToken]);
+
+  useEffect(() => {
+    setActiveArtifactId(null);
+    setArtifactGenerationError(null);
+
+    if (!activeSessionId || skipNextMessagesFetch.current) {
+      setArtifacts([]);
+      return;
+    }
+
+    let cancelled = false;
+    api
+      .listArtifacts(activeSessionId)
+      .then((result) => {
+        if (cancelled) return;
+        setArtifacts(result);
+      })
+      .catch(() => {
+        if (!cancelled) setArtifacts([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId]);
 
   const selectSession = useCallback((sessionId: string) => {
     setActiveSessionId(sessionId);
@@ -285,6 +321,36 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
   const retryLoadSessions = useCallback(() => setSessionsReloadToken((t) => t + 1), []);
   const retryLoadMessages = useCallback(() => setMessagesReloadToken((t) => t + 1), []);
 
+  const selectArtifact = useCallback((artifactId: string | null) => setActiveArtifactId(artifactId), []);
+
+  const generateArtifact = useCallback(
+    async (kind: ArtifactKind, topic?: string) => {
+      const sessionId = activeSessionId;
+      if (!sessionId) return;
+      setIsGeneratingArtifact(true);
+      setArtifactGenerationError(null);
+      try {
+        const result = await api.createArtifact(sessionId, kind, topic);
+        if (activeSessionIdRef.current !== sessionId) return;
+        if (result.artifact) {
+          setArtifacts((current) => [...current, result.artifact!]);
+          setActiveArtifactId(result.artifact.id);
+        } else if (result.generation_error) {
+          setArtifactGenerationError(result.generation_error.message);
+        }
+      } catch (error) {
+        if (activeSessionIdRef.current === sessionId) {
+          setArtifactGenerationError(errorMessage(error));
+        }
+      } finally {
+        if (activeSessionIdRef.current === sessionId) {
+          setIsGeneratingArtifact(false);
+        }
+      }
+    },
+    [activeSessionId],
+  );
+
   const isGenerating = pendingSessionId !== null && pendingSessionId === activeSessionId;
 
   const value = useMemo<ConversationsState>(
@@ -306,6 +372,12 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
       retryGeneration,
       retryLoadSessions,
       retryLoadMessages,
+      artifacts,
+      activeArtifactId,
+      selectArtifact,
+      isGeneratingArtifact,
+      artifactGenerationError,
+      generateArtifact,
     }),
     [
       sessions,
@@ -321,6 +393,12 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
       providerStatus,
       selectSession,
       createSession,
+      artifacts,
+      activeArtifactId,
+      selectArtifact,
+      isGeneratingArtifact,
+      artifactGenerationError,
+      generateArtifact,
       sendMessage,
       retryGeneration,
       retryLoadSessions,

@@ -37,10 +37,10 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 | 1 (done) | Architecture, FastAPI + React foundation, Docker Compose, health/readiness, design system, docs |
 | 2 (done) | PostgreSQL schema for users/conversations/messages, Alembic migrations, conversation API, real session/message persistence wired into a redesigned conversation UI |
 | 3 (done) | Real agent layer, built on the required **Pi Coding Agent** framework (`pi-coding-agent`, see `docs/architecture.md` "Agent framework choice"), + model provider abstraction (Ollama mandatory local, Anthropic Claude cloud), assistant reply generation and persistence, retry semantics, Markdown-rendered assistant messages, provider visibility in the UI |
-| 4 (this phase) | Real Lenny knowledge base (ingestion of the official free source repository), BM25 retrieval service, grounded answers with structured per-message citations rendered via `SourceCard`, honest "no support found" behavior for unsupported questions |
-| 5 | Ship 30 for 30 skill, artifact generation, and a sanitized artifact viewer |
-| 6 | Resilience hardening (timeouts, retries, degraded-mode behavior) |
-| 7 | Comprehensive tests and final demo readiness |
+| 4 (done) | Real Lenny knowledge base (ingestion of the official free source repository), BM25 retrieval service, grounded answers with structured per-message citations rendered via `SourceCard`, honest "no support found" behavior for unsupported questions |
+| 5 (this phase) | Ship 30 for 30 essay generation, Markdown/HTML artifact generation (both grounded, both reusing Phase 4 retrieval), a functional Artifact Viewer in the existing three-pane shell, sandboxed HTML rendering |
+| 6 | Resilience hardening, UI/observability/documentation polish, evaluator handoff readiness |
+| 7 | Final evaluator walkthrough and submission readiness |
 
 ## Non-goals (for the assignment as a whole, unless stated otherwise later)
 
@@ -54,8 +54,8 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 1. **Start and persist a conversation** (Phase 2, implemented): user starts a new conversation, sends a message, refreshes the browser, and finds both the conversation and the message exactly as they left them.
 2. **Ask and get a real answer** (Phase 3, implemented): user asks a product/growth question → the configured model (Ollama locally, or Anthropic Claude if configured for cloud) generates a genuine response → the reply persists and survives a refresh; a follow-up question is answered with the prior turn in context.
 3. **Grounded Q&A** (Phase 4, implemented): the assistant retrieves relevant transcript/newsletter passages from the real ingested Lenny corpus before answering, and cites them as structured `SourceCard`s (episode title, guest, publication date, and a link when the source repository actually provides one) - never fabricated. When retrieval finds no adequate support, the assistant is instructed to say so rather than silently answer as if it were grounded.
-4. **Ship 30 for 30** (not yet implemented): user requests a 30-day shipping plan for a stated goal → assistant produces a structured, day-by-day artifact.
-5. **Artifact review** (not yet implemented): user asks for a framework or document → assistant generates it as an artifact in the right-hand panel, which the user can review and export.
+4. **Ship 30 for 30 essay** (Phase 5, implemented): user clicks "Ship 30 Essay" → the assistant drafts a grounded, hook-first, skimmable essay from the conversation and any relevant Lenny material, shown in the Artifact Viewer.
+5. **Artifact review** (Phase 5, implemented): user clicks "Markdown doc" or "HTML page" → the assistant generates a structured document or a self-contained HTML page from the conversation, rendered in the right-hand Artifact Viewer (Markdown via the same safe renderer as chat; HTML in a fully sandboxed, script-free iframe) beside the chat, not a separate application.
 
 ## Acceptance criteria (Phase 1)
 
@@ -91,6 +91,15 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 - Sources persist across a browser refresh exactly like the message they're attached to.
 - No transcript content is ever executed or treated as an instruction - retrieved excerpts are explicitly labeled as untrusted reference data in the prompt sent to the model.
 
+## Acceptance criteria (Phase 5)
+
+- A "Ship 30 Essay" action produces a real, grounded Markdown essay with a hook, headings/bullets, and a concrete takeaway, persisted as an `Artifact` and shown in the Artifact Viewer.
+- "Markdown doc" and "HTML page" actions each produce real, persisted artifacts; the HTML artifact is a complete, self-contained document.
+- Artifact generation never fabricates a citation and reports a safe `generation_error` (never a fabricated artifact) on failure.
+- The Artifact Viewer renders beside the chat in the existing three-pane shell - never a redirect to a separate application.
+- Generated HTML is rendered only inside a fully sandboxed (`sandbox=""`), script-free iframe - never via `dangerouslySetInnerHTML` in the main app.
+- Artifacts are session-isolated like every other resource in this application.
+
 ## Risks and trade-offs
 
 - **Local-only LLM quality**: Ollama-hosted open models may give weaker answers than a cloud frontier model. Mitigated by keeping the model-provider abstraction pluggable (implemented in Phase 3) rather than hard-coding Ollama everywhere.
@@ -98,6 +107,8 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 - **Lexical retrieval, not semantic**: BM25 over exact vocabulary means a paraphrase that shares no words with the source material won't be found even if the topic is covered. Accepted deliberately at this corpus size and stack - see `docs/architecture.md` "Retrieval strategy" for the full reasoning and the stated upgrade path (Postgres FTS or pgvector) if the corpus grows substantially.
 - **Free starter-pack corpus, not the full archive**: retrieval quality and topic coverage are bounded by the 50 podcasts + 10 newsletters actually ingested and verified; the full paid archive was not available in this environment.
 - **Small local model's instruction-following**: `llama3.2:1b` doesn't always verbally hedge "no Lenny support for this" as consistently as instructed, even though the underlying citation data is never fabricated regardless of the model's wording - observed directly during real-data verification, documented in `docs/architecture.md` "Grounding prompt and empty retrieval".
+- **Ship 30 word-count target on the local demo path**: measured at ~500-600 words on CPU-only `llama3.2:1b`, short of the ~1,250-word target, because reaching it would require a token cap/generation time impractical for an interactive local demo - see `docs/architecture.md` "Ship 30 / content generation and artifacts". The cloud provider path reaches the target comfortably.
+- **Small model detail attribution**: the local model occasionally blends specific details across multiple real retrieved sources in its own prose (never inventing a fictional source, but sometimes misattributing a real detail) - the citation data shown to the user is always accurate regardless, since it comes from the retrieval layer, not the model's text.
 - **Scope discipline across 7 phases**: the biggest execution risk is scope creep - implementing later-phase functionality early creates rework. This is why each phase stopped at its stated scope, even though each would have been easy to keep going.
 
 ## Success metric (knowledge quality, Phase 4)

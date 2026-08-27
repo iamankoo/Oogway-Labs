@@ -143,3 +143,39 @@ class ProviderStatusOut(BaseModel):
 
     provider: Literal["ollama", "cloud"]
     model: str
+
+
+class ArtifactCreate(BaseModel):
+    """Requests generation of one artifact from the session's conversation.
+
+    ``kind`` selects the generator (Phase 5): ``ship30`` (a ~1,250-word
+    grounded essay), ``markdown`` (a structured Markdown summary/doc), or
+    ``html`` (a self-contained HTML/CSS document). ``topic`` optionally
+    focuses the generator; when omitted, the session's own conversation
+    is the topic.
+    """
+
+    kind: Literal["ship30", "markdown", "html"]
+    topic: str | None = Field(default=None, max_length=500)
+
+
+class ArtifactOut(BaseModel):
+    id: uuid.UUID
+    session_id: uuid.UUID
+    title: str
+    kind: Literal["ship30", "markdown", "html"]
+    content: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ArtifactCreateResponse(BaseModel):
+    """Same never-fabricate contract as ``MessageCreateResponse``: on
+    failure ``artifact`` is absent (not a placeholder) and
+    ``generation_error`` carries a safe, user-facing reason.
+    """
+
+    artifact: ArtifactOut | None = None
+    generation_error: GenerationError | None = None

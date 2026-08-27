@@ -1,8 +1,8 @@
 # Lenny Growth Assistant
 
-An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews, essays, and podcast transcripts. This repository is being built in seven phases; **this README reflects Phase 1 + 2 + 3 + 4** - the foundation, conversation persistence, a real agent/model layer, and now real retrieval grounding over Lenny's actual source material. Later phases add Ship 30 for 30, artifact generation, and resilience/testing hardening. Claims below are scoped to what actually exists today.
+An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews, essays, and podcast transcripts. This repository is being built in seven phases; **this README reflects Phase 1 + 2 + 3 + 4 + 5** - the foundation, conversation persistence, a real agent/model layer, real retrieval grounding, and now Ship 30 essay + artifact generation with a native Artifact Viewer. Later phases add resilience/observability polish and final evaluator readiness. Claims below are scoped to what actually exists today.
 
-## What exists today (Phase 1 + 2 + 3 + 4)
+## What exists today (Phase 1-5)
 
 - A FastAPI backend with typed configuration, structured logging, centralized error handling, and `/health` / `/health/ready` endpoints (readiness now also checks the active model provider).
 - Real PostgreSQL persistence for conversations: `users` -> `sessions` -> `messages`, plus an `artifacts` table reserved for Phase 5, and (Phase 4) `knowledge_documents` / `knowledge_chunks` / `message_sources` for the knowledge base - all managed through Alembic migrations (see [Database](#database) below).
@@ -12,7 +12,13 @@ An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews
 - A React + TypeScript + Tailwind frontend with a premium, editorially-inflected three-pane product shell, a real session sidebar, a subtle provider indicator, safe Markdown-rendered assistant messages, a restrained "thinking" state, inline retry on generation failure, and (Phase 4) real `SourceCard`s shown under a grounded assistant reply.
 - Docker Compose orchestrating the backend, frontend, PostgreSQL, and Ollama for local development, with the backend running pending migrations automatically on boot. Knowledge-base ingestion is a separate, explicit, documented command - never part of `docker compose up`.
 
-**Not yet implemented (see "Known limitations" below):** Ship 30 for 30, artifact generation. Retrieval is lexical (BM25), not semantic/vector search - see `docs/architecture.md` "Retrieval strategy" for that tradeoff.
+- **Ship 30 essays and artifacts** (`backend/app/services/artifact_generation.py`): three actions in the Artifact Viewer - "Ship 30 Essay" (a grounded, hook-first essay), "Markdown doc" (a structured summary), and "HTML page" (a self-contained document) - each grounded through the same Phase 4 retrieval, persisted as `Artifact` rows, and rendered natively beside the chat. Generated HTML renders only inside a fully sandboxed, script-free iframe (`sandbox=""`) - see [Artifacts and HTML security](#artifacts-and-html-security) below.
+
+**Not yet implemented (see "Known limitations" below):** Retrieval is lexical (BM25), not semantic/vector search - see `docs/architecture.md` "Retrieval strategy" for that tradeoff. On the mandatory CPU-only local demo, Ship 30 essays run shorter (~500-600 words) than the ~1,250-word target due to practical latency limits - see `docs/architecture.md` "Ship 30 / content generation and artifacts".
+
+## Artifacts and HTML security
+
+The right-hand Artifact Viewer panel (previously a placeholder) is now functional: use "Ship 30 Essay", "Markdown doc", or "HTML page" in an active conversation. Markdown/essay artifacts render through the same safe Markdown renderer chat messages use. **Generated HTML is untrusted model output** and is rendered only inside `<iframe sandbox="">` with `srcDoc` - never via `dangerouslySetInnerHTML` in the main app. An empty `sandbox` value applies every restriction at once: no JavaScript execution, no form submission, no popups, no top-level navigation, and a unique opaque origin with zero access to this app's cookies/storage/DOM. See `docs/architecture.md` "Artifact Viewer and HTML isolation" for the full reasoning.
 
 ## Knowledge base
 

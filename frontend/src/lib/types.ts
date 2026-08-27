@@ -52,3 +52,20 @@ export interface ProviderStatus {
   provider: LlmProvider;
   model: string;
 }
+
+export type ArtifactKind = "ship30" | "markdown" | "html";
+
+export interface Artifact {
+  id: string;
+  session_id: string;
+  title: string;
+  kind: ArtifactKind;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ArtifactCreateResponse {
+  artifact: Artifact | null;
+  generation_error: GenerationError | null;
+}

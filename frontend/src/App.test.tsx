@@ -15,6 +15,8 @@ const { mockApi } = vi.hoisted(() => ({
     sendMessage: vi.fn(),
     retryMessage: vi.fn(),
     getProviderStatus: vi.fn(),
+    listArtifacts: vi.fn(),
+    createArtifact: vi.fn(),
   },
 }));
 
@@ -52,6 +54,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
   mockApi.getProviderStatus.mockResolvedValue(makeProviderStatus());
+  mockApi.listArtifacts.mockResolvedValue([]);
 });
 
 afterEach(() => {

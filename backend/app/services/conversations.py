@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import SessionNotFoundError
 from app.db.knowledge_models import MessageSource
-from app.db.models import ChatSession, Message, MessageRole
+from app.db.models import Artifact, ChatSession, Message, MessageRole
 from app.services.knowledge_retriever import RetrievedChunk
 
 TITLE_MAX_LENGTH = 60
@@ -146,3 +146,23 @@ async def create_message(
     await db.refresh(message, attribute_names=["sources"])
     await db.refresh(session)
     return message, session
+
+
+async def create_artifact(
+    db: AsyncSession, *, user_id: uuid.UUID, session_id: uuid.UUID, title: str, kind: str, content: str
+) -> Artifact:
+    """Persist a generated artifact (Phase 5). Session-isolated like every write here."""
+    await get_session(db, user_id=user_id, session_id=session_id)
+    artifact = Artifact(session_id=session_id, title=title, kind=kind, content=content)
+    db.add(artifact)
+    await db.commit()
+    await db.refresh(artifact)
+    return artifact
+
+
+async def list_artifacts(db: AsyncSession, *, user_id: uuid.UUID, session_id: uuid.UUID) -> list[Artifact]:
+    await get_session(db, user_id=user_id, session_id=session_id)
+    result = await db.execute(
+        select(Artifact).where(Artifact.session_id == session_id).order_by(Artifact.created_at)
+    )
+    return list(result.scalars().all())

@@ -1,5 +1,14 @@
 import { config } from "@/lib/config";
-import type { Message, MessageCreateResponse, ProviderStatus, RetryResponse, Session } from "@/lib/types";
+import type {
+  Artifact,
+  ArtifactCreateResponse,
+  ArtifactKind,
+  Message,
+  MessageCreateResponse,
+  ProviderStatus,
+  RetryResponse,
+  Session,
+} from "@/lib/types";
 
 /**
  * Thrown for any non-2xx API response. Carries the backend's safe,
@@ -60,4 +69,10 @@ export const api = {
   retryMessage: (sessionId: string) =>
     request<RetryResponse>(`/api/sessions/${sessionId}/messages/retry`, { method: "POST" }),
   getProviderStatus: () => request<ProviderStatus>("/api/provider"),
+  listArtifacts: (sessionId: string) => request<Artifact[]>(`/api/sessions/${sessionId}/artifacts`),
+  createArtifact: (sessionId: string, kind: ArtifactKind, topic?: string) =>
+    request<ArtifactCreateResponse>(`/api/sessions/${sessionId}/artifacts`, {
+      method: "POST",
+      body: JSON.stringify({ kind, topic }),
+    }),
 };

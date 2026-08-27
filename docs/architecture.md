@@ -308,6 +308,38 @@ The backend, never the model, decides what a user sees as a source. `GrowthAssis
 - **Small local model instruction-following** - see the grounding section above; the citation data is always trustworthy, the model's prose occasionally is looser about hedging than instructed.
 - **No reranking model** - the coverage-gated BM25 score is used directly as the final ranking; a learned reranker was judged unnecessary complexity at this corpus size, per the assignment's "prefer simple, reliable architecture" guidance.
 
+## Ship 30 / content generation and artifacts (Phase 5)
+
+### Overview
+
+Three generators (`app/services/artifact_generation.py`) share one shape: build a retrieval query from the conversation/topic, ground it with real retrieved Lenny material (the exact same `build_grounding_block` chat answers use), then drive one `app.agents.simple_completion.run_single_turn` call - a small, separate helper that builds its own tool-free `pi_agent.agent.Agent` rather than overloading `GrowthAssistantAgent`'s conversational-turn calling convention. All three still go through the same required agent framework and provider abstraction as chat.
+
+- **Ship 30 essay** (`generate_ship30_essay`): a dedicated system prompt instructs a strong hook, narrative progression, skimmable headings/bullets/selective bold, a concrete takeaway, and the same grounding rules as chat (never fabricate a quote/episode/guest; say so plainly when nothing relevant was retrieved).
+- **Markdown doc** (`generate_markdown_doc`): a structured reference summary with a "Sources" section only when real material was retrieved.
+- **HTML/CSS doc** (`generate_html_doc`): a single self-contained `<!DOCTYPE html>` document, inline `<style>` only, no external stylesheets/fonts/images/JS requested in the prompt. A defensive post-processing step strips a Markdown code fence if the model wraps its output in one despite instructions not to.
+
+### API and persistence
+
+`POST /api/sessions/{id}/artifacts` (`{"kind": "ship30"|"markdown"|"html", "topic": str | null}`) generates and persists one `Artifact` row (the Phase 2 table, unchanged schema) and returns `ArtifactCreateResponse` - `{artifact, generation_error}`, the exact same never-fabricate contract as `MessageCreateResponse`: a failure never produces a placeholder artifact, and is reported the same way a chat generation failure is. `GET /api/sessions/{id}/artifacts` lists a session's artifacts, session-isolated through the same `conversations.get_session` check every other endpoint uses.
+
+### Content-generation timeouts and token caps
+
+A ~1,250-word essay or a full HTML document needs materially more output than a chat reply, so content generation uses its own settings rather than reusing chat's: `Settings.artifact_timeout_seconds` (default 180s, vs. chat's `model_timeout_seconds`) and `get_model_provider(settings, content_mode=True)`, which selects a higher per-provider token cap (`OLLAMA_CONTENT_MAX_RESPONSE_TOKENS=1800`, `CLOUD_CONTENT_MAX_RESPONSE_TOKENS=4096`) instead of the chat caps.
+
+**Known, measured limitation**: on the mandatory CPU-only local Ollama path (`llama3.2:1b`), a real Ship 30 essay generation took ~2m20s and produced ~500-600 words, not the full ~1,250-word target - llama's tokenizer runs closer to ~3 tokens/word on this content, and raising the token cap further to reach 1,250 words would push generation time past what's reasonable for an interactive demo on this hardware. The mechanism (retrieval, grounding, hook, narrative, concrete takeaway) is real and verified; the exact word-count target is reachable on the cloud provider path (`CLOUD_CONTENT_MAX_RESPONSE_TOKENS=4096` comfortably covers 1,250 words in a few seconds) but was not fully reached on the local demo path within a practical timeout. This is stated here rather than silently shipped as if the target were met.
+
+A second real observation from live testing: the small local model, while never inventing a wholly fictional episode/guest/quote, occasionally blends or misattributes specific details across the multiple real sources it was given (e.g. attributing a detail from one retrieved episode to the guest of another). The citation data itself (the `SourceCard`s / retrieved excerpts) is always accurate since it comes straight from the retrieval layer, never the model - but the model's own prose synthesis is not infallible. Documented honestly as a small-local-model limitation, not glossed over.
+
+### Artifact Viewer and HTML isolation
+
+The existing three-pane shell's right-hand `ArtifactPanel` (previously a static "later phase" placeholder) is now functional: three action buttons ("Ship 30 Essay", "Markdown doc", "HTML page") generate against the active session, a generating/error/empty state matches the rest of the product's state handling, and multiple generated artifacts for a session are switchable via small pills.
+
+Markdown/Ship30 artifacts render through `react-markdown` (the same safe renderer chat messages use - no raw HTML execution). **HTML artifacts are untrusted model output** and are never rendered via `dangerouslySetInnerHTML` in the main React tree. They render inside an `<iframe srcDoc={content} sandbox="">`:
+
+- **What it allows**: the document's own layout, inline CSS, and any inline images/fonts it references - a normal-looking styled page.
+- **What it blocks**: `sandbox=""` (no tokens at all) applies every sandbox restriction simultaneously - JavaScript does not execute, forms cannot submit, popups are blocked, top-level navigation is blocked, and the frame is given a unique opaque origin, so even if a script somehow ran it would have zero access to this application's cookies, `localStorage`, DOM, or any same-origin request capability.
+- **Why**: this is the simplest correct isolation for content the assistant generated from a small local model with no adversarial-input guarantees - no allowlist of "safe" HTML to maintain, no server-side sanitizer to keep in sync with new HTML/CSS features, just structural isolation the browser itself enforces.
+
 ## Conversation API
 
 All endpoints live under `/api` (`app/api/sessions.py`, `app/api/system.py`), return the shapes defined in `app/api/schemas.py` (never raw ORM objects or provider SDK objects), and use the Phase 1 error envelope for failures:
@@ -322,6 +354,8 @@ All endpoints live under `/api` (`app/api/sessions.py`, `app/api/system.py`), re
 | `POST` | `/api/sessions/{id}/messages/retry` | Regenerates a reply for the pending user message. `200`, or `409 nothing_to_retry` if there is none. Returns `assistant_message`, `session`, `generation_error` - never a `message` field, since retry never creates one. |
 | `GET` | `/api/provider` | Returns `{provider, model}` reflecting the real active `Settings` - the source of truth for the frontend's provider indicator. |
 | `GET` | `/api/knowledge/status` | Internal diagnostics (Phase 4): document/chunk counts, last ingestion timestamp. Not part of the chat product surface. |
+| `POST` | `/api/sessions/{id}/artifacts` | Generates a Ship 30 essay / Markdown doc / HTML doc (Phase 5) from the session's conversation. `201`. Returns `{artifact, generation_error}` - same never-fabricate contract as message generation. |
+| `GET` | `/api/sessions/{id}/artifacts` | Lists a session's generated artifacts, session-isolated. |
 
 `MessageOut` (Phase 4) additionally carries `sources: SourceOut[]` and a computed `grounded: bool` (`len(sources) > 0`) - populated for a grounded assistant message, `[]`/`false` for every other message.
 

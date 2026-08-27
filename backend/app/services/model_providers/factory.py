@@ -25,29 +25,43 @@ from app.config import Settings
 
 # Bounds response length so CPU-only local inference has a predictable
 # latency ceiling - see docs/architecture.md "Timeouts and retry" for the
-# measurement this is based on.
+# measurement this is based on. Content generation (Phase 5: Ship 30
+# essays, Markdown/HTML artifacts) needs materially more output than a
+# chat turn, so it asks for a higher cap via ``max_tokens_override`` -
+# still bounded, just a different bound for a different request shape.
 OLLAMA_MAX_RESPONSE_TOKENS = 400
 CLOUD_MAX_RESPONSE_TOKENS = 2048
+OLLAMA_CONTENT_MAX_RESPONSE_TOKENS = 1800
+CLOUD_CONTENT_MAX_RESPONSE_TOKENS = 4096
 
 
-def get_model_provider(settings: Settings) -> LLMProvider:
+def get_model_provider(settings: Settings, *, content_mode: bool = False) -> LLMProvider:
+    """Build the configured provider.
+
+    ``content_mode=True`` (Ship 30 essays / Markdown / HTML artifacts,
+    see ``app.api.artifacts``) selects the higher content-generation
+    token cap instead of the chat-turn cap - the right cap either way is
+    picked per-provider here, not left to the caller to know.
+    """
     if settings.llm_provider == "ollama":
+        max_tokens = OLLAMA_CONTENT_MAX_RESPONSE_TOKENS if content_mode else OLLAMA_MAX_RESPONSE_TOKENS
         return OpenAIProvider(
             model=settings.ollama_model,
             # Ollama's OpenAI-compatible endpoint doesn't check the key, but
             # the OpenAI SDK requires a non-empty string to construct a client.
             api_key="ollama",
             base_url=f"{settings.ollama_base_url.rstrip('/')}/v1",
-            max_tokens=OLLAMA_MAX_RESPONSE_TOKENS,
+            max_tokens=max_tokens,
         )
     if settings.llm_provider == "cloud":
         if not settings.cloud_api_key:
             raise MissingCredentialsError(
                 "Cloud provider is not configured. Set CLOUD_API_KEY in your environment."
             )
+        max_tokens = CLOUD_CONTENT_MAX_RESPONSE_TOKENS if content_mode else CLOUD_MAX_RESPONSE_TOKENS
         return AnthropicProvider(
             model=settings.cloud_model,
             api_key=settings.cloud_api_key,
-            max_tokens=CLOUD_MAX_RESPONSE_TOKENS,
+            max_tokens=max_tokens,
         )
     raise ValueError(f"Unknown LLM provider: {settings.llm_provider!r}")
