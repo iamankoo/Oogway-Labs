@@ -1,16 +1,17 @@
 # Lenny Growth Assistant
 
-An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews, essays, and podcast transcripts. This repository is being built in seven phases; **this README reflects Phase 1 + Phase 2** - the foundation plus real conversation persistence. Later phases add retrieval-grounded answers, the Ship 30 for 30 skill, artifact generation, and resilience/testing hardening. Claims below are scoped to what actually exists today.
+An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews, essays, and podcast transcripts. This repository is being built in seven phases; **this README reflects Phase 1 + 2 + 3** - the foundation, conversation persistence, and now a real agent/model layer. Phase 4 adds retrieval grounding over Lenny's actual transcripts; later phases add Ship 30 for 30, artifact generation, and resilience/testing hardening. Claims below are scoped to what actually exists today.
 
-## What exists today (Phase 1 + Phase 2)
+## What exists today (Phase 1 + 2 + 3)
 
-- A FastAPI backend with typed configuration, structured logging, centralized error handling, and `/health` / `/health/ready` endpoints.
+- A FastAPI backend with typed configuration, structured logging, centralized error handling, and `/health` / `/health/ready` endpoints (readiness now also checks the active model provider).
 - Real PostgreSQL persistence for conversations: `users` -> `sessions` -> `messages`, plus an `artifacts` table reserved for Phase 5, managed through Alembic migrations (see [Database](#database) below).
-- A conversation API (`/api/sessions`, `/api/sessions/{id}/messages`) backed by that schema, with session isolation enforced in the data-access layer.
-- A React + TypeScript + Tailwind frontend with a premium, editorially-inflected three-pane product shell (navigation with real session history, conversation workspace, artifact panel) and a reusable design-system component library.
-- Users can create conversations, send messages, and have both persist across a page refresh. **There is no LLM wired up yet** - messages save, but no assistant reply is generated (that's Phase 3).
+- **A real agent layer** (`backend/app/agents/`) that builds conversation context from persisted messages and calls a **model provider abstraction** (`backend/app/services/model_providers/`) supporting both a local **Ollama** provider (mandatory for the demo) and a **cloud Anthropic Claude** provider, switchable purely via configuration - see [Model provider](#model-provider) below.
+- Sending a message now triggers a real assistant reply: the user's message is always persisted, the agent is invoked, and on success the assistant's reply is persisted too - on failure, the user's message is kept and a safe, retryable error is returned instead of a fabricated response.
+- A React + TypeScript + Tailwind frontend with a premium, editorially-inflected three-pane product shell, a real session sidebar, a subtle provider indicator ("● Local · llama3.2:3b"), safe Markdown-rendered assistant messages, a restrained "thinking" state, and inline retry on generation failure.
 - Docker Compose orchestrating the backend, frontend, PostgreSQL, and Ollama for local development, with the backend running pending migrations automatically on boot.
-- An Ollama service wired for future model calls (no model-provider abstraction yet - that is Phase 3).
+
+**Not yet implemented (see "Known limitations" below):** transcript ingestion, retrieval/RAG, source citations, Ship 30 for 30, artifact generation. The assistant answers from its own reasoning only - it is explicitly instructed never to claim its answers are grounded in Lenny's actual podcast/newsletter content until Phase 4 connects that.
 
 ## Prerequisites
 
@@ -36,13 +37,15 @@ This starts four services:
 
 ### Pulling an Ollama model
 
-The `ollama` container starts empty - it does **not** auto-download a model on `docker compose up` so that every developer isn't forced into a multi-gigabyte download just to boot the stack. Pull a model once the container is running:
+The `ollama` container starts empty - it does **not** auto-download a model on `docker compose up` so that every developer isn't forced into a multi-gigabyte download just to boot the stack. Pull a model once the container is running (the default configured model is `llama3.2:3b`, a small-but-capable model chosen so this step is fast):
 
 ```bash
-docker compose exec ollama ollama pull llama3.1:8b
+docker compose exec ollama ollama pull llama3.2:3b
 ```
 
-Change `OLLAMA_MODEL` in `.env` if you pull a different model. Model calls themselves are not implemented until Phase 3 - Phase 1 only establishes the configuration and the running service.
+If you configure a different `OLLAMA_MODEL`, pull that instead. **This step is mandatory** - Phase 3 actually calls Ollama to generate assistant replies; until the configured model is pulled, sending a message will return a clear "model not installed" error rather than a fake response (see [Error handling](#error-handling)).
+
+**If your machine (or Docker Desktop's memory allocation) is constrained**, drop to a smaller model such as `llama3.2:1b` (~1.3GB) - CPU-only inference of even a 3B model needs a few GB of headroom to load promptly. This assignment's own development environment had Docker Desktop capped at ~3.5GB total RAM across all containers, and `llama3.2:1b` was what actually verified end-to-end there; a typical developer machine with more memory available to Docker should run `llama3.2:3b` (the documented default) without issue. Either way, expect roughly 15-20 tokens/second on CPU-only inference for a model this size - the backend's `MODEL_TIMEOUT_SECONDS` (default 60s) and its `num_predict` cap on response length (400 tokens) are tuned around that, not around GPU-class speed.
 
 ## Verifying the stack
 
@@ -54,11 +57,23 @@ curl http://localhost:8000/health/ready
 `/health` returns `{"status": "ok", ...}` as soon as the API process is up. `/health/ready` checks PostgreSQL connectivity and returns HTTP 503 with `"status": "degraded"` if the database isn't reachable yet - useful while the `postgres` container is still starting.
 
 ```bash
-curl -X POST http://localhost:8000/api/sessions
-curl http://localhost:8000/api/sessions
+SESSION_ID=$(curl -s -X POST http://localhost:8000/api/sessions | python -c "import sys,json;print(json.load(sys.stdin)['id'])")
+curl -s -X POST "http://localhost:8000/api/sessions/$SESSION_ID/messages" \
+  -H "Content-Type: application/json" -d '{"content":"What signals suggest product-market fit?"}'
 ```
 
-Open http://localhost:5173 to use the app: create a conversation, send a message, refresh the page, and confirm it's still there.
+A healthy response includes both `"message"` (your question, persisted) and `"assistant_message"` (a real reply from the configured model). If `"assistant_message"` is `null`, check `"generation_error"` - most commonly it means the configured Ollama model isn't pulled yet (see above).
+
+Open http://localhost:5173 to use the app: create a conversation, send a message, watch the assistant actually reply, refresh the page, and confirm both messages are still there.
+
+## Model provider
+
+See `docs/architecture.md` ("Model provider abstraction" and "Agent architecture") for the full design. In short:
+
+- `LLM_PROVIDER=ollama` (default) - routes through `OllamaProvider`, calling the Ollama container's `/api/chat`. This is the **mandatory demo path**.
+- `LLM_PROVIDER=cloud` - routes through `AnthropicProvider`, calling the real Anthropic Messages API via the official `anthropic` Python SDK. Requires `CLOUD_API_KEY` (get one at https://console.anthropic.com/) and, optionally, a different `CLOUD_MODEL` (default `claude-opus-5`).
+- Switching providers is a `.env` change only - `docker compose restart backend` (or just restart the backend process locally) picks it up. No code changes, no frontend changes: the sidebar's provider indicator and `/health/ready`'s provider check both reflect whichever is configured.
+- Without cloud credentials, `LLM_PROVIDER=cloud` produces a clean, safe error (`missing_credentials`) on every send attempt rather than crashing the app or falling back to a different provider silently.
 
 ## Database
 
@@ -102,7 +117,7 @@ All configuration lives in `.env` (backend + Docker Compose) and `frontend/.env`
 
 ## Testing and linting
 
-Backend tests run against an in-memory SQLite database (seeded with the same demo user the real migration seeds), not a real PostgreSQL instance - they never depend on your local Postgres being up or in any particular state.
+Backend tests run against an in-memory SQLite database (seeded with the same demo user the real migration seeds), not a real PostgreSQL instance - they never depend on your local Postgres being up or in any particular state. Every test gets a stubbed model provider by default (an autouse fixture in `conftest.py`) so the suite never makes a real network call to Ollama or a cloud API; `tests/test_model_providers.py`, `tests/test_agent.py`, and `tests/test_generation_api.py` then use their own targeted stubs/mocks to exercise specific provider and failure behavior.
 
 ```bash
 # Backend
@@ -122,7 +137,7 @@ npm run build
 
 ```
 OL/
-├── backend/              FastAPI application (app/, alembic/, tests/)
+├── backend/              FastAPI application (app/agents/, app/services/model_providers/, alembic/, tests/)
 ├── frontend/             React + TypeScript + Tailwind application (src/)
 ├── docs/                 PRD, design, and architecture documentation
 ├── tests/                Reserved for cross-cutting/integration tests (Phase 2+)
@@ -134,21 +149,27 @@ OL/
 
 See `docs/architecture.md` for the system design and module boundaries, `docs/design.md` for the UI/UX approach, and `docs/PRD.md` for product scope.
 
+## Error handling
+
+Assistant generation failures never crash the request or fabricate a response - the user's message is always persisted, and the API returns a `generation_error: {code, message}` instead of `assistant_message`. The frontend shows the safe `message` text inline with a "Try again" button. Codes: `provider_unavailable` (Ollama/cloud unreachable), `model_not_found` (configured model isn't installed/available), `missing_credentials` (cloud provider selected, no API key), `model_timeout` (exceeded `MODEL_TIMEOUT_SECONDS`), `empty_response` (model returned nothing). See `docs/architecture.md` ("Assistant generation failure semantics") for the full contract, including retry semantics (`POST /api/sessions/{id}/messages/retry` regenerates for the existing pending user message - it never creates a duplicate).
+
 ## Known limitations (intentionally deferred)
 
-These are not bugs - they are out of scope for Phase 1/2 by design:
+These are not bugs - they are out of scope for Phase 1/2/3 by design:
 
-- No chat, agent orchestration, or model calls are wired up yet (Phase 3) - messages persist, but nothing generates a reply.
-- No authentication - a single deterministic local user, documented above and in `docs/architecture.md`.
-- No retrieval/RAG over Lenny's transcripts yet (Phase 4).
+- **No retrieval/grounding yet (Phase 4).** The assistant reasons from the model's own knowledge only - it is explicitly instructed never to claim a specific episode, guest, or quote as its source. Real Lenny transcript ingestion and citations are Phase 4.
 - No Ship 30 for 30 skill yet (Phase 4).
 - No artifact generation or sanitized artifact viewer yet (Phase 5) - the `artifacts` table and its future UI slot exist, but nothing writes to it.
+- No authentication - a single deterministic local user, documented in `docs/architecture.md`.
+- No true token streaming - a deliberate simplicity choice for this phase (see `docs/architecture.md` "Streaming decision"); the UI still shows a polished "thinking" state while waiting.
+- Cloud provider (Anthropic) is implemented and unit-tested, but was not verified against a real Anthropic API key in this environment (none was available) - only its configuration/error-handling path was verified end-to-end. See `docs/architecture.md` for exactly what was and wasn't exercised.
+- The local Ollama path was verified with genuine, successful end-to-end generations earlier in development (real multi-paragraph Markdown replies, follow-up context, session isolation - see `docs/architecture.md`). Later in the same session, this development sandbox's disk I/O degraded enough that even a small model's cold load repeatedly exceeded `MODEL_TIMEOUT_SECONDS` - which is itself the `model_timeout` error path working as designed (user message safely persisted, clean error surfaced, no crash), just not the happy path. This is a characteristic of that specific constrained sandbox, not a defect in the timeout/retry design; a normal developer machine with an unencumbered disk did not exhibit this in earlier testing.
 - `npm audit` reports vulnerabilities in `esbuild`/`vite` as transitively pulled in by `vitest`'s dev tooling; these affect only the local Vite dev server's request handling, not the production build output, and are tracked for a future dependency bump rather than a breaking `vitest@4` upgrade mid-phase.
 
 ## Troubleshooting
 
 - **`docker compose up` fails to bind a port**: something else on your machine is using 5173, 8000, 5432, or 11434. Stop that process or change the port mapping in `docker-compose.yml`.
-- **`/health/ready` stays degraded**: the `postgres` container may still be starting. Check `docker compose logs postgres`.
+- **`/health/ready` stays degraded**: check the `dependencies` array in the response - `postgresql` degraded means the `postgres` container may still be starting (`docker compose logs postgres`); `model_provider` degraded means Ollama isn't reachable or the configured model isn't pulled yet (see above), or `CLOUD_API_KEY` is unset while `LLM_PROVIDER=cloud`.
 - **Frontend can't reach the backend**: confirm `VITE_API_BASE_URL` in `frontend/.env` matches where the backend is actually listening, and check CORS_ALLOW_ORIGINS on the backend includes the frontend's origin.
-- **Ollama calls fail**: Phase 1/2 do not call Ollama yet, so this is expected - confirm the container is running and a model is pulled (see above) in preparation for Phase 3.
+- **Sending a message returns `generation_error`**: read its `message` field - it's written to be actionable (e.g. tells you exactly which model to pull). Check `docker compose logs backend` for the structured log line (`assistant_generation_failed`) with the same error code.
 - **Backend fails to start with a schema/migration error**: the backend's Docker `CMD` runs `alembic upgrade head` before uvicorn - check `docker compose logs backend` for the specific migration error, and confirm `postgres` is healthy (`docker compose ps`).

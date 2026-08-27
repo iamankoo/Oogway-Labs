@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** Phase 1 + Phase 2. Documents what is actually built plus the boundaries left for later phases to plug into. Update this document as each phase lands - it should never describe unimplemented behavior as if it exists.
+**Status:** Phase 1 + 2 + 3. Documents what is actually built plus the boundaries left for later phases to plug into. Update this document as each phase lands - it should never describe unimplemented behavior as if it exists.
 
 ## System overview
 
@@ -11,26 +11,38 @@ Frontend (React/Vite)
 FastAPI API  (backend/app/main.py, backend/app/api/)
     |
     v
-Application / Agent Orchestration Layer   <- Phase 3 (backend/app/domain/, currently empty)
+Agent layer  (backend/app/agents/)         <- Phase 3
+    |  GrowthAssistantAgent: persona + conversation context -> one provider call
     |
-    +-- Skills + Tools                    <- Phase 4/5
-    |     +-- Grounded QA
+    +-- Skills + Tools                     <- Phase 4/5 (not yet built)
+    |     +-- Grounded QA (retrieval)
     |     +-- Ship30
     |     +-- Artifact generation
     |
     v
-Retrieval / Knowledge Layer               <- Phase 4 (not yet built)
+Retrieval / Knowledge Layer                <- Phase 4 (not yet built)
     |
     v
 PostgreSQL (persistence)  +  vector-capable index (later)
     |
     v
-LLM Provider                              <- Phase 3 (backend/app/services/, currently empty)
-    +-- Ollama (running today, not yet called)
-    +-- Cloud provider (not yet built)
+Model Provider Abstraction (backend/app/services/model_providers/)   <- Phase 3
+    +-- OllamaProvider  -> Ollama container (mandatory demo path)
+    +-- AnthropicProvider -> Anthropic Claude API (cloud path)
 ```
 
-Phase 1 implemented everything above the "Application / Agent Orchestration Layer" line, plus the raw infrastructure (PostgreSQL, Ollama) below it. Phase 2 fills in the PostgreSQL box with a real schema and connects the API to it through `app/db/models.py` and `app/services/conversations.py` - but the orchestration/skills/retrieval layers are still deliberate placeholders: no model is called, no answer is generated, only conversation state is persisted.
+Phase 1 built everything above the "Agent layer" line, plus the raw infrastructure (PostgreSQL, Ollama) below it. Phase 2 filled in the PostgreSQL box with a real schema. Phase 3 builds the agent layer and the model provider abstraction and wires them together: sending a message now really invokes a configured LLM and persists its reply. The skills/retrieval layers remain deliberate placeholders - the agent has a persona and conversation history, but no external knowledge source yet.
+
+## Agent framework choice
+
+The assignment asks for agent integration via the **Anthropic Claude Agent SDK** or **Pi Coding Agent**. Neither fits this system directly, and using either literally would have actively worked against the assignment's other hard requirements:
+
+- The **Claude Agent SDK** (`claude-agent-sdk` / `@anthropic-ai/claude-agent-sdk`) is Claude Code packaged as a library - it ships a harness built around autonomous coding/computer-use (built-in file read/write/edit, bash, grep, web search) and is Anthropic-model-only. It has no notion of routing to a local Ollama model, which the assignment makes mandatory for the demo. Adopting it would mean either faking Ollama support or dropping the mandatory local-provider requirement - neither is acceptable.
+- **Pi Coding Agent** is, likewise, a coding-focused agent tool - built for operating a codebase, not for holding a product/growth advice conversation with provider-agnostic model routing.
+
+What the assignment actually asks for, underneath the specific SDK names, is: *don't call an LLM HTTP API directly from a route and call that "the agent layer" - have a real agent abstraction.* That's what `backend/app/agents/` is: `GrowthAssistantAgent` owns the assistant's persona (`prompts.py`), turns a session's persisted messages into bounded conversation context, and delegates the actual completion to whichever `ModelProvider` is configured - it never talks to Ollama or Anthropic's wire format itself. For the cloud path, generation goes through the **official `anthropic` Python SDK's Messages API** (`client.messages.create`) - the standard, production-appropriate way to call Claude for a conversational assistant, as opposed to the Agent SDK's autonomous-coding harness. This keeps the demo's mandatory local-model requirement intact while still giving a real, swappable agent abstraction and a real Anthropic integration.
+
+If a genuinely open-ended, tool-using agent becomes necessary (e.g. Phase 4's retrieval, or a future artifact-generation skill), `GrowthAssistantAgent` is the natural place to add tool-calling - either a hand-rolled loop or the Anthropic SDK's Tool Runner (`client.beta.messages.tool_runner`) - without changing the provider abstraction underneath it.
 
 ## Why a modular monolith
 
@@ -53,29 +65,42 @@ backend/
     │                     reads environment variables.
     ├── logging_config.py Structlog setup shared by the whole process.
     ├── api/
-    │   ├── health.py       GET /health, GET /health/ready
-    │   ├── sessions.py     Session + message endpoints (Phase 2).
+    │   ├── health.py       GET /health, GET /health/ready (now also checks
+    │   │                   the active model provider).
+    │   ├── sessions.py     Session + message endpoints, including
+    │   │                   assistant-generation orchestration (Phase 3).
+    │   ├── system.py       GET /api/provider - real active provider/model.
     │   └── schemas.py      Pydantic request/response models for the API.
     ├── core/
     │   ├── errors.py     AppError hierarchy + centralized exception handlers.
     │   └── responses.py  Shared Pydantic response models.
+    ├── agents/
+    │   ├── prompts.py       SYSTEM_PROMPT - the assistant's base instruction.
+    │   ├── growth_assistant.py  GrowthAssistantAgent: context construction
+    │   │                        + timeout wrapping + a ModelProvider call.
+    │   └── errors.py         AgentError taxonomy (see "Assistant generation
+    │                         failure semantics" below).
     ├── db/
     │   ├── session.py    Async SQLAlchemy engine/sessionmaker, the
     │   │                 `/health/ready` check, and the `get_db` FastAPI
     │   │                 dependency.
-    │   ├── models.py     ORM models: User, ChatSession, Message, Artifact.
+    │   ├── models.py     ORM models: User, ChatSession, Message (now with
+    │   │                 an `extra_metadata` JSON column), Artifact.
     │   └── types.py      `GUID` - a portable UUID column type (native
     │                     `UUID` on PostgreSQL, `CHAR(36)` elsewhere) so the
     │                     same models run against SQLite in tests.
-    ├── services/
-    │   └── conversations.py  Data-access layer: create/list/get sessions,
-    │                         list/create messages. Owns session isolation
-    │                         and the deterministic title-derivation logic.
-    └── domain/           Placeholder for agent orchestration and skill
-                          dispatch (Phase 3/4).
+    └── services/
+        ├── conversations.py       Data-access layer: create/list/get
+        │                          sessions, list/create messages. Owns
+        │                          session isolation and title derivation.
+        └── model_providers/       The model provider abstraction (Phase 3).
+            ├── base.py              `ModelProvider` ABC + `ProviderResponse`.
+            ├── ollama_provider.py   `OllamaProvider` (mandatory demo path).
+            ├── anthropic_provider.py `AnthropicProvider` (cloud path).
+            └── factory.py           Picks a provider from `Settings.llm_provider`.
 ```
 
-**Why this split:** `api/` never talks to the database or a model provider directly - it depends on `domain/` (once populated) or, for Phase 1, directly on the narrow `db/session.check_database_connection()` helper for the readiness check. This keeps HTTP concerns (status codes, request/response shapes) separate from business logic, so Phase 3 can introduce agent orchestration under `domain/` without touching `api/health.py` at all.
+**Why this split:** `api/` never talks to a model provider directly - it depends on the agent layer (`app/agents/`), which itself depends only on the `ModelProvider` abstraction, never on Ollama or Anthropic specifics. This keeps HTTP concerns (status codes, request/response shapes) separate from "how do I get an answer out of a model," so adding a third provider or a genuinely different agent (tool-using, multi-step) never touches `api/sessions.py`'s HTTP contract. `app/domain/` from Phase 1's plan was folded into `app/agents/` once the actual shape of "agent orchestration" became concrete - a separate empty `domain/` package alongside a populated `agents/` package would have been redundant.
 
 ### Configuration
 
@@ -87,7 +112,7 @@ backend/
 
 ### Health vs. readiness
 
-`/health` never touches a dependency - it exists purely to answer "is the process alive," and must stay that way so it can be used as a fast liveness probe. `/health/ready` is where dependency checks belong; Phase 1 checks PostgreSQL only (via a real `SELECT 1`, not a hard-coded "ok"), and returns HTTP 503 with `status: "degraded"` if it fails. Adding an Ollama or retrieval-index check later means appending to the `dependencies` list in `api/health.py` - the response shape already supports multiple dependencies.
+`/health` never touches a dependency - it exists purely to answer "is the process alive," and must stay that way so it can be used as a fast liveness probe. `/health/ready` is where dependency checks belong: PostgreSQL (a real `SELECT 1`) and, as of Phase 3, the active model provider. The provider check is deliberately asymmetric - for Ollama it's a live, short-timeout ping to `/api/tags` confirming both that Ollama is reachable *and* that the configured model is actually pulled; for the cloud provider it only confirms `CLOUD_API_KEY` is set, since spending real money on a completion call every time something polls `/health/ready` would be the wrong tradeoff. Either way, HTTP 503 with `status: "degraded"` if any dependency fails - a retrieval-index check in Phase 4 means appending to the same `dependencies` list.
 
 ### Database and schema
 
@@ -124,9 +149,65 @@ This is a single-user take-home application with no login/signup flow. Every ses
 
 `app/services/conversations.py` is the only code that queries `sessions`/`messages`, and every function takes an explicit `user_id`. `get_session()` scopes its query to `WHERE id = :session_id AND user_id = :user_id` - a session that exists but belongs to a different user produces the same `SessionNotFoundError` as a session that doesn't exist at all, so the API never reveals whether an id belongs to someone else. `list_messages()` and `create_message()` both call `get_session()` first, so message access is always gated by that same ownership check - isolation is enforced once, in one place, not re-implemented per endpoint. `backend/tests/test_sessions_api.py::test_session_isolation_between_two_sessions` exercises this directly.
 
-### Conversation API
+### Model provider abstraction
 
-All endpoints live under `/api/sessions` (`app/api/sessions.py`), return the shapes defined in `app/api/schemas.py` (never raw ORM objects), and use the Phase 1 error envelope for failures:
+`app/services/model_providers/base.py` defines `ModelProvider`, an ABC with one method: `async generate(*, system: str, messages: list[ProviderMessage]) -> ProviderResponse`. Everything above this boundary - the agent, the API, the frontend's provider indicator - depends only on that interface, never on Ollama's or Anthropic's wire format. Two implementations exist today:
+
+- **`OllamaProvider`** (`ollama_provider.py`) - a thin `httpx` client against Ollama's own `POST /api/chat` (there is no official Ollama Python SDK, and one HTTP endpoint doesn't justify adopting a third-party wrapper). This is the **mandatory demo path** (`LLM_PROVIDER=ollama`, the default).
+- **`AnthropicProvider`** (`anthropic_provider.py`) - the official `anthropic` Python SDK's async Messages API (`AsyncAnthropic().messages.create`). Selected via `LLM_PROVIDER=cloud`.
+
+`factory.get_model_provider(settings)` is the *only* place that branches on `settings.llm_provider` - adding a third provider means one new class plus one new branch here, nothing else changes. Both providers normalize every failure mode into the same `app.agents.errors.AgentError` subclasses (see below) so the agent and API layers handle "the provider failed" identically regardless of which provider is active.
+
+**Configuration surface** (`.env.example`): `LLM_PROVIDER`, `MODEL_TIMEOUT_SECONDS`, `MAX_CONTEXT_MESSAGES` govern both providers; `OLLAMA_BASE_URL`/`OLLAMA_MODEL` govern the local path; `CLOUD_PROVIDER`/`CLOUD_MODEL`/`CLOUD_API_KEY` govern the cloud path. Switching providers is restarting the backend process with a different `.env` - no code change, and the frontend's provider indicator and `/health/ready` both pick up the new configuration automatically because they read it live from `Settings`, never from anything cached client-side.
+
+### Agent architecture
+
+`app/agents/growth_assistant.py`'s `GrowthAssistantAgent` is constructed with a `ModelProvider` plus `max_context_messages` and `timeout_seconds` (both from `Settings`). Its `respond(history: list[Message])`:
+
+1. Filters `history` down to `user`/`assistant` messages (system messages, if any exist in the future, are never sent back to the model as conversation turns) and takes the most recent `max_context_messages` of them - see "Session context" below.
+2. Calls `provider.generate(system=SYSTEM_PROMPT, messages=context)`, wrapped in `asyncio.wait_for(..., timeout=timeout_seconds)` as a provider-independent safety net on top of each provider's own HTTP-level timeout.
+3. Returns an `AgentResult` (content, provider name, model name, latency) - the API layer decides what to persist and what to expose; the agent itself never touches the database.
+
+`app/agents/prompts.py`'s `SYSTEM_PROMPT` is the assistant's base instruction. It explicitly tells the model it has **no access to Lenny's transcripts yet** and must never fabricate an episode, guest, or quote - this is the mechanism that keeps Phase 3 honest about not being grounded, and it must be updated (not silently left as-is) once Phase 4 actually wires up retrieval.
+
+### Session context
+
+The agent is never handed conversation history from the frontend - `app/api/sessions.py` fetches it itself via `conversations.list_messages(db, user_id=DEMO_USER_ID, session_id=session_id)` (the same session-isolation-enforcing function everything else uses) immediately before invoking the agent. There is no code path where a client can supply arbitrary "context" for a different session; the isolation guarantee from Phase 2 is untouched by Phase 3. Context length is bounded by a fixed count (`MAX_CONTEXT_MESSAGES`, default 20) rather than a token budget - simple, predictable, and sufficient until a real long-conversation problem shows up in practice.
+
+### Assistant generation failure semantics
+
+This is the contract every "what happens on failure" question in the assignment resolves to, and it's implemented once, in `app/api/sessions._generate_assistant_reply`:
+
+1. The user's message is persisted **first**, unconditionally, via the same `conversations.create_message` Phase 2 already had. A model failure can never lose a user's input.
+2. The agent is invoked. `AgentError` (and all its subclasses - `ProviderUnavailableError`, `ModelNotFoundError`, `MissingCredentialsError`, `ModelTimeoutError`, `EmptyResponseError`) is caught, never re-raised as an HTTP error - a generation failure is a *partial* success (the user's turn was saved), not a request failure.
+3. On success, the assistant's reply is persisted via `conversations.create_message(..., role=MessageRole.assistant, metadata={...})` - reusing the exact same function and its title/`updated_at` bookkeeping, just with a different role.
+4. The HTTP response (`MessageCreateResponse`) always includes `message` (the user's, now-persisted turn) and `session`; `assistant_message` is present only on success, `generation_error: {code, message}` only on failure - never both, never a fabricated placeholder in either field.
+
+**Retry** (`POST /api/sessions/{id}/messages/retry`) regenerates for the session's *pending* user message - the one at the end of history that has no assistant reply after it yet (`conversations.get_message_pending_retry`). If the last message already has a reply, retry is rejected with `409 nothing_to_retry` rather than silently doing nothing or creating a duplicate turn. This is what makes retry safe to call repeatedly: it can never create a second user message for the same question.
+
+### Streaming decision
+
+Phase 3 uses a **single non-streaming response** per turn, not token-by-token streaming. Both Ollama (`stream: false`) and the Anthropic SDK support streaming, so this was a deliberate simplicity choice, not a technical limitation: introducing SSE/websocket plumbing, partial-message persistence semantics, and stream-cancellation-on-session-switch would have added meaningful architectural surface area for one phase, for a benefit (perceived latency) that a well-designed "thinking" state substantially covers already (see `docs/design.md`). The response time is still bounded by `MODEL_TIMEOUT_SECONDS`, so the user is never left waiting indefinitely. Streaming remains a clean addition later: it would replace `ModelProvider.generate`'s single-shot return with an async generator, without changing the agent's or API's external contract in a way that touches session isolation or persistence semantics.
+
+### Timeouts and retry (provider-level)
+
+Every provider call has an explicit timeout at two layers: the provider's own HTTP client (`httpx.AsyncClient(timeout=...)` for Ollama, the `anthropic` client's `timeout=` for the cloud path) and the agent's `asyncio.wait_for` wrapper, both driven by the single `MODEL_TIMEOUT_SECONDS` setting (default **60s**) - a request can never hang past that, regardless of which provider misbehaves. There is no automatic retry-with-backoff inside a single request (beyond what the `anthropic` SDK already does internally for 429/5xx); the user-facing retry described above is the explicit, safe recovery path instead, so "how many times did this actually run" is never ambiguous in the logs.
+
+Two numbers here are tuned from real measurement, not guessed: `OllamaProvider` caps output at `num_predict: 400` tokens, and the timeout default is 60s rather than something tighter. Both come directly from live-testing this phase's mandatory demo path: on modest CPU-only hardware, a small model (`llama3.2:1b`/`3b`) generates at roughly **16-17 tokens/second**, and the assistant's own system prompt encourages structured, multi-section answers - an uncapped response could run past 600-800 tokens, i.e. 35-50+ seconds, before a client even finishes reading it. Capping output length is the primary lever (it bounds worst-case latency predictably, the way `max_tokens` already does on the cloud path); the 60s timeout is the backstop for whatever that cap doesn't cover (a cold model load, contended hardware). Both are configurable per deployment - faster hardware or a GPU can lower `MODEL_TIMEOUT_SECONDS`, and the token cap can move to a per-request setting if a future phase needs longer-form answers.
+
+### Observability
+
+Every generation attempt logs through the existing Phase 1 structlog setup: `assistant_generation_succeeded` (session id, provider, model, latency_ms) on success, `assistant_generation_failed` (session id, provider, error code) on failure - both in `app/api/sessions.py`. Message *content* is never logged, on either path - only identifiers and metadata, per the assignment's "avoid dumping complete conversation contents into production logs" requirement. The same provider/model/latency/status triple is also persisted on the assistant `Message` row itself (`extra_metadata` JSON column) for later inspection without needing to correlate against application logs - never anything resembling hidden reasoning or the raw system prompt.
+
+### Concurrency considerations
+
+- **Session switch mid-generation**: the frontend tracks which session a send was issued for and only applies the response if that session is still active when it resolves (`activeSessionIdRef` in `conversations-context.tsx`) - a stale reply can never render under the wrong conversation. The backend has no equivalent problem: `_generate_assistant_reply` is scoped to one `session_id` per call and writes are session-isolated regardless of what the client does afterward.
+- **Retry while a request is still in flight**: the composer and retry button are both disabled while `isGenerating` is true, so the same click can't be issued twice from the same browser tab. Two truly concurrent requests to the same session (e.g. two tabs) are not explicitly locked against each other in Phase 3 - both would succeed independently, appending two assistant replies - which is an acceptable, non-corrupting outcome for a single-user local app, not a case that warrants distributed locking at this stage.
+- **Browser refresh mid-generation**: the backend keeps processing and persists the assistant reply regardless of whether the client is still connected (the request isn't cancelled on disconnect) - reloading the page and re-fetching messages shows the completed turn once it lands.
+
+## Conversation API
+
+All endpoints live under `/api` (`app/api/sessions.py`, `app/api/system.py`), return the shapes defined in `app/api/schemas.py` (never raw ORM objects or provider SDK objects), and use the Phase 1 error envelope for failures:
 
 | Method | Path | Behavior |
 |---|---|---|
@@ -134,7 +215,9 @@ All endpoints live under `/api/sessions` (`app/api/sessions.py`), return the sha
 | `GET` | `/api/sessions` | Lists the demo user's sessions, most recently active first. `200`. |
 | `GET` | `/api/sessions/{id}` | Returns one session. `404` (`session_not_found`) if missing or not owned. |
 | `GET` | `/api/sessions/{id}/messages` | Lists messages in creation order. `404` under the same rule. |
-| `POST` | `/api/sessions/{id}/messages` | Creates a **user** message (the request schema only accepts `role: "user"` - a client cannot post a fake assistant/system message). `201`, returns both the created message and the (possibly retitled) session. |
+| `POST` | `/api/sessions/{id}/messages` | Creates a **user** message (the request schema only accepts `role: "user"`), then attempts assistant generation. `201`. Returns `message`, `assistant_message` (nullable), `session`, `generation_error` (nullable) - see "Assistant generation failure semantics" above. |
+| `POST` | `/api/sessions/{id}/messages/retry` | Regenerates a reply for the pending user message. `200`, or `409 nothing_to_retry` if there is none. Returns `assistant_message`, `session`, `generation_error` - never a `message` field, since retry never creates one. |
+| `GET` | `/api/provider` | Returns `{provider, model}` reflecting the real active `Settings` - the source of truth for the frontend's provider indicator. |
 
 Title derivation is deterministic, not AI-generated: the first user message in a session becomes its title (truncated to 60 characters with an ellipsis if longer); later messages never overwrite an already-derived title. See `services.conversations._derive_title_from_content`.
 
@@ -147,9 +230,10 @@ frontend/src/
 ├── lib/
 │   ├── utils.ts               `cn()` class-merging helper.
 │   ├── config.ts              The only place that reads `import.meta.env`.
-│   ├── api.ts                 Typed fetch client (`ApiError` + the `api.*` methods)
-│   │                          for `/api/sessions`. The only place that calls `fetch`.
-│   ├── types.ts                `Session`/`Message` types shared by api.ts and the UI.
+│   ├── api.ts                 Typed fetch client (`ApiError` + the `api.*` methods).
+│   │                          The only place that calls `fetch`.
+│   ├── types.ts                Shared types, including `GenerationError` and
+│   │                          `ProviderStatus` (Phase 3).
 │   └── session-grouping.ts     Pure functions: bucket sessions into Today/Yesterday/
 │                              Earlier, format a session's sidebar timestamp.
 ├── components/
@@ -157,16 +241,19 @@ frontend/src/
 │   │                          Card, Badge, Tooltip, Dialog, Spinner, EmptyState,
 │   │                          Skeleton, SourceCard, WaveformIcon).
 │   └── layout/                App shell composition (AppShell, Sidebar, TopBar,
-│                              ArtifactPanel, NavItem, SessionItem, ThemeToggle).
+│                              ArtifactPanel, NavItem, SessionItem, ThemeToggle,
+│                              ProviderIndicator).
 └── features/
     └── chat/                  ConversationsProvider (state), ChatWorkspace,
-                               WelcomeState, Composer, MessageList, MessageBubble -
-                               the chat-specific composition, kept separate from
-                               generic layout so a future `features/artifacts/`
-                               can sit alongside it without entangling the two.
+                               WelcomeState, Composer, MessageList, MessageBubble
+                               (Markdown-rendering), ThinkingIndicator,
+                               GenerationErrorCard - the chat-specific
+                               composition, kept separate from generic layout so
+                               a future `features/artifacts/` can sit alongside
+                               it without entangling the two.
 ```
 
-**Why `components/ui` vs `components/layout` vs `features/`:** `ui/` has zero product knowledge - a `Button` doesn't know it's used in a chat app. `layout/` knows about the app's shell (sidebar, panels) but not about chat-specific concepts (it reads session data from `features/chat`'s context, but doesn't own it). `features/chat/` is the one place that knows about conversations, messages, and drafts. This means Phase 4/5's `features/artifacts/` can be added without reaching into `components/`.
+**Why `components/ui` vs `components/layout` vs `features/`:** `ui/` has zero product knowledge - a `Button` doesn't know it's used in a chat app. `layout/` knows about the app's shell (sidebar, panels) but not about chat-specific concepts (it reads session/provider data from `features/chat`'s context, but doesn't own it - `ProviderIndicator` is a small exception living in `layout/` since it's a shell-chrome element, not a conversation element). `features/chat/` is the one place that knows about conversations, messages, and drafts. This means Phase 4/5's `features/artifacts/` can be added without reaching into `components/`.
 
 ### Frontend state model
 
@@ -175,11 +262,13 @@ frontend/src/
 - **Sessions**: fetched once on mount; `sessionsState` is `"loading" | "idle" | "error"` so the sidebar can render a skeleton, the real list, or an error-with-retry without any component juggling booleans itself.
 - **Active session id**: persisted to `localStorage` (a per-browser convenience, not authentication) so a page refresh restores the same open conversation - falling back to the most recently active session if the stored id no longer exists.
 - **Messages for the active session**: refetched whenever the active session changes; reset to `[]` immediately on switch so a slow request can never flash session A's messages while session B is loading.
-- **Sending a message**: `sendMessage()` creates a session first if none is active yet (so typing directly into the empty state and hitting send "just works"), then posts the message and appends the real server response - it never fabricates an optimistic assistant reply. A `skipNextMessagesFetch` ref avoids a subtle race where a freshly created session's (empty) message-list fetch could resolve *after* the first message was appended and wipe it back to `[]`.
+- **Provider status**: fetched once on mount from `GET /api/provider` and rendered as-is by `ProviderIndicator` - never hard-coded, never a UI toggle that changes a label without the backend actually switching.
+- **Sending a message**: `sendMessage()` creates a session first if none is active yet (so typing directly into the empty state and hitting send "just works"). The user's own message is rendered **optimistically** the instant send is pressed (a local, temporary-id copy) - CPU-only local inference can take tens of seconds, and without this the transcript looked empty/unresponsive for the entire round trip, which read as broken during manual testing. Once the request resolves, the optimistic copy is replaced by the server's real message and the real assistant message is appended (or, on a generation failure, only a `generationError` is set - never a fabricated assistant reply); if the request itself fails, the optimistic message is removed and the composer restores the draft. A `pendingSessionId` field drives `isGenerating` (true only while the *active* session's request is outstanding) and an `activeSessionIdRef` guards every response handler against applying a stale reply after the user has switched sessions. A `skipNextMessagesFetch` ref avoids a subtle race where a freshly created session's (empty) message-list fetch could resolve *after* the first message was appended and wipe it back to `[]`.
+- **Retry**: `retryGeneration()` calls `POST .../messages/retry` and appends only the resulting assistant message (or a new `generationError`) - it never touches the existing user message, matching the backend's retry contract.
 
-No state-management library was added for this - `useState`/`useEffect`/`useContext` are sufficient for one provider with a handful of fields, and pulling in Redux/Zustand/React Query for this would be exactly the kind of unnecessary dependency the project intentionally avoids.
+No state-management library was added for this - `useState`/`useEffect`/`useContext` are sufficient for one provider with a modest, well-understood set of fields, and pulling in Redux/Zustand/React Query for this would be exactly the kind of unnecessary dependency the project intentionally avoids.
 
-No fake assistant responses are ever rendered: `MessageBubble` supports `user`/`assistant`/`system` roles so Phase 3 can start rendering real assistant messages without a rework, but Phase 2's `ConversationsProvider` only ever appends messages that came back from `POST /api/sessions/{id}/messages`, which itself only accepts `role: "user"`.
+`MessageBubble` renders assistant content through `react-markdown` with a custom `components` map (headings, lists, bold/italic, inline/block code, links) and **no** `rehype-raw` plugin - raw HTML found in a model's response (e.g. an injected `<img onerror=...>`) is displayed as inert text, never executed. This is assistant-text rendering only, deliberately unrelated to the sandboxed artifact renderer Phase 5 will need for untrusted HTML documents - conflating the two would be the wrong security model for either one.
 
 ## Local development architecture
 
@@ -187,6 +276,6 @@ No fake assistant responses are ever rendered: `MessageBubble` supports `user`/`
 
 ## Integration points for later phases
 
-- **Phase 3 (agent orchestration + model provider)**: implement routing/dispatch under `app/domain/`, and an Ollama/cloud client under a new `app/services/model_provider.py`, both importing `get_settings()` for `ollama_base_url`/`ollama_model`. The orchestration layer would call `services.conversations.create_message(..., role=MessageRole.assistant, ...)` to persist the generated reply using the same data-access path user messages already go through - no new isolation logic needed. `MessageCreate` in `api/schemas.py` intentionally only accepts `role: "user"` from clients; an assistant-authored endpoint (or the same endpoint gated differently) is a Phase 3 decision.
-- **Phase 4 (retrieval + Ship 30 for 30)**: add a retrieval client under `app/services/` and skills under `app/domain/`. The `metadata`-shaped extension point for citations is the message's future `sources`/citation data - `components/ui/source-card.tsx` already establishes the visual foundation, unused until real retrieval exists.
+- **Phase 4 (retrieval + Ship 30 for 30)**: add a retrieval client under `app/services/` and a query step in `GrowthAssistantAgent.respond` (or a new method) that fetches relevant transcript passages and folds them into the system/context before calling the provider - the provider abstraction and persistence path underneath don't change. Citations would ride in the assistant `Message`'s `extra_metadata` (already JSON) or a new field; `components/ui/source-card.tsx` already establishes the frontend visual foundation, unused until real retrieval exists. `SYSTEM_PROMPT` in `app/agents/prompts.py` must be updated at that point - it currently explicitly disclaims grounding, which stops being true once Phase 4 lands.
 - **Phase 5 (artifacts)**: the `artifacts` table (`app/db/models.py`) and `components/layout/artifact-panel.tsx` are the integration points - both already exist, one persists nothing yet and the other renders an empty state, until Phase 5 connects them.
+- **Phase 6 (resilience)**: `MODEL_TIMEOUT_SECONDS` and the `AgentError` taxonomy are the hooks for more sophisticated resilience (circuit breaking, provider fallback, backoff) without touching the API contract - `_generate_assistant_reply` is the single choke point where that logic would live.

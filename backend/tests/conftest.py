@@ -47,6 +47,30 @@ async def db_sessionmaker() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     await engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _stub_model_provider_by_default(monkeypatch: pytest.MonkeyPatch):
+    """Never let a test reach a real model provider unless it asks to.
+
+    Applies to every test automatically: session/message tests that don't
+    care about generation (most of test_sessions_api.py) get a safe,
+    always-succeeding stub instead of a real network attempt to
+    ``localhost:11434``. Tests that *do* care about provider behavior
+    (test_generation_api.py) override this with their own
+    ``monkeypatch.setattr("app.api.sessions.get_model_provider", ...)``
+    within the test itself, which simply takes effect after this one.
+    """
+    from app.services.model_providers.base import ModelProvider, ProviderMessage, ProviderResponse
+
+    class _DefaultStubProvider(ModelProvider):
+        provider_name = "ollama"
+        model_name = "stub-model"
+
+        async def generate(self, *, system: str, messages: list[ProviderMessage]) -> ProviderResponse:
+            return ProviderResponse(content="stub response", model=self.model_name, latency_ms=0)
+
+    monkeypatch.setattr("app.api.sessions.get_model_provider", lambda _settings: _DefaultStubProvider())
+
+
 @pytest.fixture
 async def client(
     settings: Settings, db_sessionmaker: async_sessionmaker[AsyncSession]

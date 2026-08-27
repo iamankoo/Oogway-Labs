@@ -1,5 +1,5 @@
 import { config } from "@/lib/config";
-import type { Message, MessageCreateResponse, Session } from "@/lib/types";
+import type { Message, MessageCreateResponse, ProviderStatus, RetryResponse, Session } from "@/lib/types";
 
 /**
  * Thrown for any non-2xx API response. Carries the backend's safe,
@@ -57,4 +57,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ role: "user", content }),
     }),
+  retryMessage: (sessionId: string) =>
+    request<RetryResponse>(`/api/sessions/${sessionId}/messages/retry`, { method: "POST" }),
+  getProviderStatus: () => request<ProviderStatus>("/api/provider"),
 };

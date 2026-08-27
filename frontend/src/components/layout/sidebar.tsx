@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NavItem } from "@/components/layout/nav-item";
+import { ProviderIndicator } from "@/components/layout/provider-indicator";
 import { SessionItem } from "@/components/layout/session-item";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { useConversations } from "@/features/chat/conversations-context";
@@ -122,6 +123,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
         <NavItem icon={BookOpen} label="Knowledge base" badge="Later phase" disabled />
         <NavItem icon={Settings} label="Settings" badge="Later phase" disabled />
         <ThemeToggle />
+        <ProviderIndicator />
       </div>
     </div>
   );

@@ -81,8 +81,10 @@ async def test_list_messages_returns_messages_in_chronological_order(client: Asy
 
     response = await client.get(f"/api/sessions/{session['id']}/messages")
     assert response.status_code == 200
-    contents = [m["content"] for m in response.json()]
-    assert contents == ["one", "two"]
+    # Each send also produces a stubbed assistant reply (autouse fixture) -
+    # filter to the user's own turns to check *their* ordering specifically.
+    user_contents = [m["content"] for m in response.json() if m["role"] == "user"]
+    assert user_contents == ["one", "two"]
 
 
 async def test_session_isolation_between_two_sessions(client: AsyncClient) -> None:
@@ -95,8 +97,13 @@ async def test_session_isolation_between_two_sessions(client: AsyncClient) -> No
     messages_a = (await client.get(f"/api/sessions/{session_a['id']}/messages")).json()
     messages_b = (await client.get(f"/api/sessions/{session_b['id']}/messages")).json()
 
-    assert [m["content"] for m in messages_a] == ["message in A"]
-    assert [m["content"] for m in messages_b] == ["message in B"]
+    user_contents_a = [m["content"] for m in messages_a if m["role"] == "user"]
+    user_contents_b = [m["content"] for m in messages_b if m["role"] == "user"]
+    assert user_contents_a == ["message in A"]
+    assert user_contents_b == ["message in B"]
+    # The assistant's replies are isolated too, not just the user's turns.
+    assert all(m["session_id"] == session_a["id"] for m in messages_a)
+    assert all(m["session_id"] == session_b["id"] for m in messages_b)
 
 
 async def test_create_message_for_unknown_session_returns_404(client: AsyncClient) -> None:

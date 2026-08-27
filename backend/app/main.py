@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
 from app.api.sessions import router as sessions_router
+from app.api.system import router as system_router
 from app.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.db.session import dispose_engine, init_engine
@@ -57,7 +58,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(sessions_router)
-    # Future routers (chat, artifacts) mount here once the corresponding
+    app.include_router(system_router)
+    # Future routers (artifacts) mount here once the corresponding
     # domain logic exists.
 
     return app

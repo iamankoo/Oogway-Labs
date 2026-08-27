@@ -22,7 +22,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, func
+from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Index, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.db.types import GUID
@@ -85,6 +85,11 @@ class Message(Base):
     role: Mapped[MessageRole] = mapped_column(Enum(MessageRole, native_enum=False, length=20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Generation metadata for assistant messages only (provider, model,
+    # latency, status) - never hidden reasoning or prompt content. Nullable
+    # because user/system messages never populate it. See
+    # docs/architecture.md "Assistant message metadata".
+    extra_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     session: Mapped[ChatSession] = relationship(back_populates="messages")
 

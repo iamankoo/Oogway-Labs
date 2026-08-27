@@ -71,12 +71,38 @@ async def list_messages(db: AsyncSession, *, user_id: uuid.UUID, session_id: uui
     return list(result.scalars().all())
 
 
+class NothingToRetryError(Exception):
+    """Raised when a session has no pending (reply-less) user message."""
+
+
+async def get_message_pending_retry(db: AsyncSession, *, user_id: uuid.UUID, session_id: uuid.UUID) -> Message:
+    """Return the user message that should be regenerated for.
+
+    Retry semantics: only the session's most recent message may be
+    retried, and only if it's a user message that has no assistant reply
+    after it yet (i.e. the previous generation attempt failed or never
+    ran). This is what prevents a retry from ever duplicating a user
+    message - it never creates one, it only re-runs generation for the
+    one that's already there.
+    """
+    history = await list_messages(db, user_id=user_id, session_id=session_id)
+    if not history or history[-1].role != MessageRole.user:
+        raise NothingToRetryError()
+    return history[-1]
+
+
 async def create_message(
-    db: AsyncSession, *, user_id: uuid.UUID, session_id: uuid.UUID, role: MessageRole, content: str
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    role: MessageRole,
+    content: str,
+    metadata: dict | None = None,
 ) -> tuple[Message, ChatSession]:
     session = await get_session(db, user_id=user_id, session_id=session_id)
 
-    message = Message(session_id=session_id, role=role, content=content)
+    message = Message(session_id=session_id, role=role, content=content, extra_metadata=metadata)
     db.add(message)
 
     if role == MessageRole.user and session.title == DEFAULT_TITLE:

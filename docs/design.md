@@ -1,6 +1,6 @@
 # Design Foundations
 
-**Status:** Phase 1 + Phase 2. Describes the visual and interaction system actually implemented in `frontend/`, not aspirational later-phase UI (streamed assistant responses, artifact rendering, real source citations) which will extend this document as it ships.
+**Status:** Phase 1 + 2 + 3. Describes the visual and interaction system actually implemented in `frontend/`, not aspirational later-phase UI (artifact rendering, real source citations, token streaming) which will extend this document as it ships.
 
 ## Visual direction
 
@@ -28,17 +28,19 @@ All colors are defined as HSL channel triples in CSS custom properties (`fronten
 
 ## UX principles
 
-1. **Never fake functionality.** Where a feature isn't implemented yet (an assistant reply, an artifact), the UI says so explicitly (composer helper text, empty-state copy) rather than silently doing nothing or pretending to work. Suggested prompts are clearly interactive UI chips, not answers - clicking one populates the composer, it never displays canned "AI" output.
-2. **Every state is designed, not accidental.** Empty, loading, disabled, and error states are first-class components (`EmptyState`, `Skeleton`, `Spinner`), not afterthoughts - see "Loading and error states" below for the full inventory now that the sidebar and conversation are backed by real network requests.
-3. **Restraint over decoration.** Transitions are short (150-200ms) opacity/color changes tied to real state changes (hover, focus, open/close, active session) - no motion added purely for spectacle.
+1. **Never fake functionality.** Where a feature isn't implemented yet (retrieval grounding, an artifact), the UI says so explicitly (composer helper text, the system prompt's own honesty about not having transcript access) rather than silently doing nothing or pretending to work. Suggested prompts are clearly interactive UI chips, not answers - clicking one populates the composer, it never displays canned "AI" output. The "thinking" state (below) communicates progress without ever exposing hidden model reasoning.
+2. **Every state is designed, not accidental.** Empty, loading, disabled, generating, and error states are first-class components (`EmptyState`, `Skeleton`, `Spinner`, `ThinkingIndicator`, `GenerationErrorCard`), not afterthoughts - see "Loading and error states" below for the full inventory.
+3. **Restraint over decoration.** Transitions are short (150-200ms) opacity/color changes tied to real state changes (hover, focus, open/close, active session, generating) - no motion added purely for spectacle. The "thinking" indicator is a static waveform glyph with a subtle pulse, not a spinner theatrics show.
 
 ## Editorial / podcast identity
 
 Because the product is grounded in podcast/newsletter knowledge, a few restrained visual cues carry that identity without fabricating content that doesn't exist yet:
 
 - **`WaveformIcon`** (`components/ui/waveform-icon.tsx`): a small, static bar-equalizer glyph used in the empty state instead of a generic sparkle/star icon. It's deliberately not animated and not a media control - it reads as an icon, not as "press play."
-- **`SourceCard`** (`components/ui/source-card.tsx`): the visual foundation for a future episode/newsletter citation (title, guest, source type, excerpt, link). It is built but **not rendered anywhere in Phase 2** - there is no retrieved source data yet, and the component takes no default props, so it can't be accidentally wired up with placeholder/fabricated episode content. Phase 4 connects it to real retrieval results.
+- **`SourceCard`** (`components/ui/source-card.tsx`): the visual foundation for a future episode/newsletter citation (title, guest, source type, excerpt, link). Still **not rendered anywhere in Phase 3** - there is no retrieved source data yet, and the component takes no default props, so it can't be accidentally wired up with placeholder/fabricated episode content. Phase 4 connects it to real retrieval results.
 - **Empty-state copy** ("Product thinking, growth, and leadership - in conversation") frames the product around expert conversations without claiming a specific episode, guest, or quote exists yet.
+- **`ProviderIndicator`** (`components/layout/provider-indicator.tsx`): a small, always-honest "which model is answering this?" readout in the sidebar footer - a colored dot plus text (never color alone), reflecting the backend's real `GET /api/provider` response. It's deliberately subdued (text-xs, muted color) so it informs without competing with the conversation for attention.
+- **Product-oriented copy discipline**: user-visible strings say "Thinking through that…" rather than "Calling agent…" or "Model invocation" - developer/implementation language never leaks into the product surface. The one exception is the composer's own honesty about scope ("Answers aren't grounded in Lenny's podcast archive yet"), which is a product-truth disclosure, not internal jargon.
 
 ## Information architecture
 
@@ -63,22 +65,28 @@ Every network-backed surface has three states beyond its populated one, per the 
 |---|---|---|---|
 | Sidebar session list | Three pulsing `Skeleton` rows | "No conversations yet" | "Couldn't load conversations" + Try again |
 | Conversation (messages) | Three pulsing message-shaped `Skeleton`s | "This conversation is empty" | "Couldn't load this conversation" + Try again |
-| Sending a message | Composer's send button shows a spinner and disables; the textarea disables to prevent a second submit mid-flight | n/a | An inline `role="alert"` message under the composer ("Your message couldn't be sent. Please try again.") and the drafted text is restored so nothing is lost |
+| Sending a message (the request itself) | Composer's send button shows a spinner and disables; the textarea disables to prevent a second submit mid-flight | n/a | An inline `role="alert"` message under the composer ("Your message couldn't be sent. Please try again.") and the drafted text is restored so nothing is lost |
+| Assistant generation (the model call) | `ThinkingIndicator` - a bubble reading "Thinking through that…", `role="status"`/`aria-live="polite"`, `aria-busy="true"` on the message log | n/a (a fresh session shows the empty-conversation state until the first send) | `GenerationErrorCard` in place of the reply - `role="alert"`, the safe backend message, and a "Try again" button. The user's own message above it is untouched. |
 
-None of these states leak a stack trace or raw HTTP status - `lib/api.ts`'s `ApiError` always carries the backend's safe, human-readable message from the shared error envelope, with a generic fallback for network failures the backend never got to respond to.
+None of these states leak a stack trace or raw HTTP status - `lib/api.ts`'s `ApiError` always carries the backend's safe, human-readable message from the shared error envelope, and `GenerationError` carries the backend's `AgentError` message the same way, with a generic fallback for network failures the backend never got to respond to.
 
 ## Accessibility principles
 
 - All interactive elements are real `<button>`/`<input>`/`<textarea>` elements with visible `:focus-visible` rings (a 2px ring using the `--color-ring` token, contrast-checked against both themes) - including every session item in the sidebar, which is a real `<button>` with `aria-current="true"` when active, not a styled `<div>`.
 - Icon-only buttons (hamburger, panel toggle, dialog close, send) carry `aria-label`; toggle buttons expose `aria-pressed` where they represent a binary state.
 - The mobile sidebar/artifact sheets are Radix `Dialog` primitives, which provide focus trapping, `Escape`-to-close, and `aria-modal` semantics for free; each sheet has a (visually hidden) `DialogTitle` so screen readers announce its purpose.
-- The message log is a `role="log"` region with `aria-live="polite"` so a screen reader announces new messages as they're sent, without re-announcing the entire history.
-- Send-failure feedback uses `role="alert"` so assistive technology picks it up immediately, matching the composer's honest-about-failure principle above.
-- Color is never the only signal: the active session is marked with both a background tint *and* a left accent border *and* `aria-current`; status badges pair a dot with text.
+- The message log is a `role="log"` region with `aria-live="polite"` and `aria-busy` (true while generating) so a screen reader announces new messages - and the fact that one is coming - without re-announcing the entire history.
+- Send-failure and generation-failure feedback both use `role="alert"` so assistive technology picks either up immediately, matching the "never fake functionality" principle above - a screen reader user is never left waiting on a reply that silently failed.
+- The "thinking" state is `role="status"`/`aria-live="polite"`, announced once, and never exposes anything beyond "a response is being generated" - no hidden reasoning, no internal step names.
+- Retry (`GenerationErrorCard`'s button) is a real, labeled `<button>` reachable by keyboard like any other action - not a link styled as a button, not icon-only.
+- The provider indicator pairs a colored dot with text ("Local · llama3.2:3b") - color is never the only signal for which provider is active.
+- Color is never the only signal generally: the active session is marked with both a background tint *and* a left accent border *and* `aria-current`; status badges pair a dot with text.
 
 ## Interaction quality
 
-- **Composer**: always typeable, including from the empty state - sending with no active conversation transparently creates one first (see `ConversationsProvider.sendMessage` in `docs/architecture.md`), so there's no artificial "click New conversation first" requirement. `Enter` sends, `Shift+Enter` inserts a newline.
-- **Send button**: disabled only when there's nothing to send or a send is already in flight (spinner shown) - no longer permanently disabled the way it was in Phase 1, since sending now really persists a message. The helper text under the composer is still explicit that no assistant reply will appear yet.
+- **Composer**: always typeable, including from the empty state - sending with no active conversation transparently creates one first (see `ConversationsProvider.sendMessage` in `docs/architecture.md`), so there's no artificial "click New conversation first" requirement. `Enter` sends, `Shift+Enter` inserts a newline. Disabled (with the textarea greyed out) only while a reply is being generated, to prevent overlapping turns in one conversation.
+- **Send button**: disabled only when there's nothing to send or a reply is already generating (spinner shown). The helper text under the composer is honest about the one thing still missing - real transcript grounding - rather than claiming replies don't work at all, since now they do.
 - **Suggested prompts**: clicking one fills the composer (creating a session first if needed) rather than displaying a pretend answer - consistent with "never fake functionality" above.
+- **Assistant replies**: render as Markdown (headings, lists, bold/italic, code, links) through custom-styled `react-markdown` components matching the design system's type scale and color tokens - never a raw, unstyled dump of the model's text, and never raw HTML execution (see `docs/architecture.md`).
+- **Generation failure**: never silently swallowed and never retried automatically - a visible card, in the position where the reply would have gone, with one clear recovery action.
 - **Panel toggles**: desktop artifact-panel collapse and mobile sheets both use the same underlying components (`Dialog` for mobile, conditional render for desktop), keeping the codebase from needing two separate systems for "showing" a panel.

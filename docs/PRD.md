@@ -1,6 +1,6 @@
 # Product Requirements Document: Lenny Growth Assistant
 
-**Status:** Foundational draft, written during Phase 1, updated after Phase 2 (persistence + conversation UI). Scope, flows, and metrics will be refined as later phases (retrieval, Ship 30 for 30, artifacts) are implemented.
+**Status:** Foundational draft, written during Phase 1, updated after Phase 2 (persistence + conversation UI) and Phase 3 (real agent/model layer). Scope, flows, and metrics will be refined as later phases (retrieval, Ship 30 for 30, artifacts) are implemented.
 
 ## Problem
 
@@ -34,8 +34,8 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 | Phase | Scope |
 |-------|-------|
 | 1 (done) | Architecture, FastAPI + React foundation, Docker Compose, health/readiness, design system, docs |
-| 2 (this phase) | PostgreSQL schema for users/conversations/messages, Alembic migrations, conversation API, real session/message persistence wired into a redesigned conversation UI |
-| 3 | Agent orchestration, model-provider abstraction (Ollama + cloud) |
+| 2 (done) | PostgreSQL schema for users/conversations/messages, Alembic migrations, conversation API, real session/message persistence wired into a redesigned conversation UI |
+| 3 (this phase) | Real agent layer + model provider abstraction (Ollama mandatory local, Anthropic Claude cloud), assistant reply generation and persistence, retry semantics, Markdown-rendered assistant messages, provider visibility in the UI |
 | 4 | Lenny transcript ingestion/RAG (Grounded QA), Ship 30 for 30 skill |
 | 5 | Artifact generation and a sanitized artifact viewer |
 | 6 | Resilience hardening (timeouts, retries, degraded-mode behavior) |
@@ -50,10 +50,11 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 
 ## Core user flows
 
-1. **Start and persist a conversation** (Phase 2, implemented): user starts a new conversation, sends a message, refreshes the browser, and finds both the conversation and the message exactly as they left them - no assistant reply yet, by design.
-2. **Grounded Q&A** (target end state, not yet implemented): user asks a product/growth question → assistant retrieves relevant transcript passages → assistant answers with citations back to source material.
-3. **Ship 30 for 30** (not yet implemented): user requests a 30-day shipping plan for a stated goal → assistant produces a structured, day-by-day artifact.
-4. **Artifact review** (not yet implemented): user asks for a framework or document → assistant generates it as an artifact in the right-hand panel, which the user can review and export.
+1. **Start and persist a conversation** (Phase 2, implemented): user starts a new conversation, sends a message, refreshes the browser, and finds both the conversation and the message exactly as they left them.
+2. **Ask and get a real answer** (Phase 3, implemented): user asks a product/growth question → the configured model (Ollama locally, or Anthropic Claude if configured for cloud) generates a genuine response, reasoning from its own general knowledge, honest that it isn't yet grounded in Lenny's actual content → the reply persists and survives a refresh; a follow-up question is answered with the prior turn in context.
+3. **Grounded Q&A** (target end state, Phase 4, not yet implemented): the same flow as above, but the assistant retrieves relevant transcript passages first and answers with citations back to real source material.
+4. **Ship 30 for 30** (not yet implemented): user requests a 30-day shipping plan for a stated goal → assistant produces a structured, day-by-day artifact.
+5. **Artifact review** (not yet implemented): user asks for a framework or document → assistant generates it as an artifact in the right-hand panel, which the user can review and export.
 
 ## Acceptance criteria (Phase 1)
 
@@ -70,11 +71,21 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 - No assistant reply is fabricated anywhere in the UI or API - the composer, message list, and API responses are all honest that only the user's own message was saved.
 - The conversation UI is judged as a deliberate, premium, product-specific design - not a generic chatbot template - per the design principles in `docs/design.md`.
 
+## Acceptance criteria (Phase 3)
+
+- A real user question, sent through the running app, produces a real model-generated reply - via the mandatory local Ollama provider by default - that persists across a refresh.
+- `LLM_PROVIDER=cloud` (with `CLOUD_API_KEY` set) routes the same flow through the real Anthropic API instead, with no code change - only configuration.
+- A model/provider failure (unreachable Ollama, model not pulled, missing cloud credentials, timeout) never crashes the request or fabricates a reply - the user's message stays saved, and a clear, actionable, safe error is returned with a working retry path that never duplicates the user's turn.
+- A follow-up question is answered using the prior turns in the same session as context; two different sessions never share context or messages.
+- The assistant never claims its answers are grounded in Lenny's actual podcast/newsletter content - Phase 4 is what makes that true.
+- The UI visibly and honestly shows which provider/model is active, renders assistant Markdown safely (no raw HTML execution), and reads as a deliberate, premium product experience - not a generic AI chat template - per `docs/design.md`.
+
 ## Risks and trade-offs
 
-- **Local-only LLM quality**: Ollama-hosted open models may give weaker answers than a cloud frontier model. Mitigated by keeping the model-provider abstraction pluggable (Phase 3) rather than hard-coding Ollama everywhere.
+- **Local-only LLM quality**: Ollama-hosted open models may give weaker answers than a cloud frontier model. Mitigated by keeping the model-provider abstraction pluggable (implemented in Phase 3) rather than hard-coding Ollama everywhere.
+- **Cloud path verification gap**: no real Anthropic API key was available in the development environment, so the cloud provider's happy path (an actual generated reply) is unit-tested with a mocked SDK but was not exercised against the live Anthropic API - only its configuration and error-handling paths were verified live. See `docs/architecture.md` for exactly what was and wasn't exercised, and the README for how a engineer with credentials can complete that verification.
 - **Retrieval quality depends on corpus**: without real transcripts to ingest, Phase 4's RAG quality is bounded by whatever sample corpus is available.
-- **Scope discipline across 7 phases**: the biggest execution risk is scope creep - implementing later-phase functionality early creates rework. This is why Phase 1 stops at architecture and UI shell, deliberately, even though it would be easy to keep going.
+- **Scope discipline across 7 phases**: the biggest execution risk is scope creep - implementing later-phase functionality early creates rework. This is why Phase 1 stopped at architecture and UI shell, Phase 2 stopped at persistence without a model, and Phase 3 stops at a real but ungrounded assistant - deliberately, even though each would have been easy to keep going.
 
 ## Initial success metrics (directional, to be made concrete once Phase 4-5 ship)
 

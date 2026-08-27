@@ -10,11 +10,16 @@ import {
 } from "react";
 
 import { api, ApiError } from "@/lib/api";
-import type { Message, Session } from "@/lib/types";
+import type { GenerationError, Message, ProviderStatus, Session } from "@/lib/types";
 
 const ACTIVE_SESSION_STORAGE_KEY = "lenny-active-session-id";
 
 type LoadState = "idle" | "loading" | "error";
+
+interface PendingGenerationError {
+  sessionId: string;
+  error: GenerationError;
+}
 
 interface ConversationsState {
   sessions: Session[];
@@ -25,11 +30,15 @@ interface ConversationsState {
   messagesState: LoadState;
   messagesError: string | null;
   isCreatingSession: boolean;
-  isSendingMessage: boolean;
+  /** True while the active session is awaiting an assistant reply. */
+  isGenerating: boolean;
+  generationError: PendingGenerationError | null;
+  providerStatus: ProviderStatus | null;
   selectSession: (sessionId: string) => void;
   createSession: () => Promise<void>;
   /** Sends to the active session, creating one first if none is active yet. */
   sendMessage: (content: string) => Promise<void>;
+  retryGeneration: () => Promise<void>;
   retryLoadSessions: () => void;
   retryLoadMessages: () => void;
 }
@@ -78,12 +87,26 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
   const [messagesReloadToken, setMessagesReloadToken] = useState(0);
 
   const [isCreatingSession, setIsCreatingSession] = useState(false);
-  const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<PendingGenerationError | null>(null);
+  const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
 
   // A brand-new session is known to have zero messages - skip the network
   // round-trip for it so a message sent immediately after creation can't
   // race with (and be wiped out by) that fetch resolving afterwards.
   const skipNextMessagesFetch = useRef(false);
+  // Read inside async callbacks to detect "the user switched sessions while
+  // a request was in flight" - a stale response must never be applied to
+  // whatever session is active by the time it resolves.
+  const activeSessionIdRef = useRef(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
+
+  useEffect(() => {
+    api
+      .getProviderStatus()
+      .then(setProviderStatus)
+      .catch(() => setProviderStatus(null));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -114,6 +137,7 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     storeActiveSessionId(activeSessionId);
+    setGenerationError(null);
 
     if (!activeSessionId) {
       setMessages([]);
@@ -172,27 +196,94 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
     }
   }, [createAndActivateSession]);
 
-  const sendMessageToSession = useCallback(async (sessionId: string, content: string) => {
-    const result = await api.sendMessage(sessionId, content);
-    setMessages((current) => [...current, result.message]);
-    setSessions((current) => sortByRecency(current.map((s) => (s.id === result.session.id ? result.session : s))));
+  const applySessionUpdate = useCallback((session: Session) => {
+    setSessions((current) => sortByRecency(current.map((s) => (s.id === session.id ? session : s))));
   }, []);
+
+  const sendMessageToSession = useCallback(
+    async (sessionId: string, content: string) => {
+      // Shown immediately so the user sees their own message land while
+      // the (potentially slow, CPU-bound local model) reply generates -
+      // without this, the transcript looks empty/unresponsive for the
+      // entire round trip. Replaced with the server's real message (same
+      // content, real id) once the request resolves, or removed if the
+      // request itself failed (the composer restores the draft in that case).
+      const optimisticId = `optimistic-${Date.now()}`;
+      const optimisticMessage: Message = {
+        id: optimisticId,
+        session_id: sessionId,
+        role: "user",
+        content,
+        created_at: new Date().toISOString(),
+      };
+      if (activeSessionIdRef.current === sessionId) {
+        setMessages((current) => [...current, optimisticMessage]);
+      }
+
+      setPendingSessionId(sessionId);
+      setGenerationError(null);
+      try {
+        const result = await api.sendMessage(sessionId, content);
+        if (activeSessionIdRef.current !== sessionId) return;
+
+        setMessages((current) => [
+          ...current.filter((m) => m.id !== optimisticId),
+          result.message,
+          ...(result.assistant_message ? [result.assistant_message] : []),
+        ]);
+        applySessionUpdate(result.session);
+        if (result.generation_error) {
+          setGenerationError({ sessionId, error: result.generation_error });
+        }
+      } catch (error) {
+        if (activeSessionIdRef.current === sessionId) {
+          setMessages((current) => current.filter((m) => m.id !== optimisticId));
+        }
+        throw error;
+      } finally {
+        if (activeSessionIdRef.current === sessionId) {
+          setPendingSessionId(null);
+        }
+      }
+    },
+    [applySessionUpdate],
+  );
 
   const sendMessage = useCallback(
     async (content: string) => {
-      setIsSendingMessage(true);
-      try {
-        const sessionId = activeSessionId ?? (await createAndActivateSession()).id;
-        await sendMessageToSession(sessionId, content);
-      } finally {
-        setIsSendingMessage(false);
-      }
+      const sessionId = activeSessionId ?? (await createAndActivateSession()).id;
+      await sendMessageToSession(sessionId, content);
     },
     [activeSessionId, createAndActivateSession, sendMessageToSession],
   );
 
+  const retryGeneration = useCallback(async () => {
+    const sessionId = activeSessionId;
+    if (!sessionId) return;
+    setPendingSessionId(sessionId);
+    setGenerationError(null);
+    try {
+      const result = await api.retryMessage(sessionId);
+      if (activeSessionIdRef.current !== sessionId) return;
+
+      if (result.assistant_message) {
+        setMessages((current) => [...current, result.assistant_message!]);
+      }
+      applySessionUpdate(result.session);
+      if (result.generation_error) {
+        setGenerationError({ sessionId, error: result.generation_error });
+      }
+    } finally {
+      if (activeSessionIdRef.current === sessionId) {
+        setPendingSessionId(null);
+      }
+    }
+  }, [activeSessionId, applySessionUpdate]);
+
   const retryLoadSessions = useCallback(() => setSessionsReloadToken((t) => t + 1), []);
   const retryLoadMessages = useCallback(() => setMessagesReloadToken((t) => t + 1), []);
+
+  const isGenerating = pendingSessionId !== null && pendingSessionId === activeSessionId;
 
   const value = useMemo<ConversationsState>(
     () => ({
@@ -204,10 +295,13 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
       messagesState,
       messagesError,
       isCreatingSession,
-      isSendingMessage,
+      isGenerating,
+      generationError: generationError && generationError.sessionId === activeSessionId ? generationError : null,
+      providerStatus,
       selectSession,
       createSession,
       sendMessage,
+      retryGeneration,
       retryLoadSessions,
       retryLoadMessages,
     }),
@@ -220,10 +314,13 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
       messagesState,
       messagesError,
       isCreatingSession,
-      isSendingMessage,
+      isGenerating,
+      generationError,
+      providerStatus,
       selectSession,
       createSession,
       sendMessage,
+      retryGeneration,
       retryLoadSessions,
       retryLoadMessages,
     ],

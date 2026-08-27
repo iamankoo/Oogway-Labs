@@ -12,19 +12,36 @@ interface ChatWorkspaceProps {
 
 export function ChatWorkspace({ className }: ChatWorkspaceProps) {
   const [draft, setDraft] = useState("");
-  const { activeSessionId, messages, messagesState, messagesError, isSendingMessage, sendMessage, retryLoadMessages } =
-    useConversations();
+  const {
+    activeSessionId,
+    messages,
+    messagesState,
+    messagesError,
+    isGenerating,
+    generationError,
+    sendMessage,
+    retryGeneration,
+    retryLoadMessages,
+  } = useConversations();
 
   return (
     <div className={cn("flex flex-col", className)}>
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
         {activeSessionId ? (
-          <MessageList messages={messages} state={messagesState} error={messagesError} onRetry={retryLoadMessages} />
+          <MessageList
+            messages={messages}
+            state={messagesState}
+            error={messagesError}
+            onRetryLoad={retryLoadMessages}
+            isGenerating={isGenerating}
+            generationError={generationError?.error ?? null}
+            onRetryGeneration={() => void retryGeneration()}
+          />
         ) : (
           <WelcomeState onSelectPrompt={setDraft} />
         )}
       </div>
-      <Composer value={draft} onChange={setDraft} onSend={sendMessage} sending={isSendingMessage} />
+      <Composer value={draft} onChange={setDraft} onSend={sendMessage} sending={isGenerating} />
     </div>
   );
 }

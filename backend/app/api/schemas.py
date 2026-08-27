@@ -37,12 +37,46 @@ class MessageOut(BaseModel):
 class MessageCreate(BaseModel):
     # Only "user" is accepted here - assistant/system messages are never
     # client-supplied, so the API can't be used to fabricate a fake
-    # assistant response. The ORM's MessageRole still supports all three
-    # for when Phase 3 starts writing assistant messages server-side.
+    # assistant response. The agent layer is the only thing that ever
+    # creates an assistant message, server-side, after a real generation.
     role: Literal["user"] = "user"
     content: str = Field(min_length=1, max_length=8000)
 
 
+class GenerationError(BaseModel):
+    """A safe, user-facing description of why assistant generation failed.
+
+    Never carries provider exception details, stack traces, or secrets -
+    see ``app.agents.errors`` for the taxonomy this is built from.
+    """
+
+    code: str
+    message: str
+
+
 class MessageCreateResponse(BaseModel):
     message: MessageOut
+    # Present only when generation succeeded. Never a fabricated message -
+    # absent (not a placeholder) whenever generation_error is set.
+    assistant_message: MessageOut | None = None
     session: SessionOut
+    generation_error: GenerationError | None = None
+
+
+class RetryResponse(BaseModel):
+    """Response for regenerating a reply to an existing user message.
+
+    No ``message`` field - retry never creates or re-returns a user
+    message, only a new assistant attempt (or another error).
+    """
+
+    assistant_message: MessageOut | None = None
+    session: SessionOut
+    generation_error: GenerationError | None = None
+
+
+class ProviderStatusOut(BaseModel):
+    """Reflects the backend's actual active configuration - never fake state."""
+
+    provider: Literal["ollama", "cloud"]
+    model: str

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "@/App";
 import { ApiError } from "@/lib/api";
-import type { Message, Session } from "@/lib/types";
+import type { Message, ProviderStatus, Session } from "@/lib/types";
 
 const { mockApi } = vi.hoisted(() => ({
   mockApi: {
@@ -13,6 +13,8 @@ const { mockApi } = vi.hoisted(() => ({
     getSession: vi.fn(),
     listMessages: vi.fn(),
     sendMessage: vi.fn(),
+    retryMessage: vi.fn(),
+    getProviderStatus: vi.fn(),
   },
 }));
 
@@ -42,9 +44,14 @@ function makeMessage(overrides: Partial<Message> = {}): Message {
   };
 }
 
+function makeProviderStatus(overrides: Partial<ProviderStatus> = {}): ProviderStatus {
+  return { provider: "ollama", model: "llama3.2:3b", ...overrides };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
+  mockApi.getProviderStatus.mockResolvedValue(makeProviderStatus());
 });
 
 afterEach(() => {
@@ -74,6 +81,25 @@ describe("empty state", () => {
       "Help me reason through a product decision",
     );
     expect(mockApi.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("provider indicator", () => {
+  it("reflects the backend's real active configuration", async () => {
+    mockApi.listSessions.mockResolvedValue([]);
+    render(<App />);
+
+    expect(await screen.findByText(/local/i)).toBeInTheDocument();
+    expect(screen.getByText(/llama3\.2:3b/)).toBeInTheDocument();
+  });
+
+  it("shows a cloud provider when the backend is configured for one", async () => {
+    mockApi.listSessions.mockResolvedValue([]);
+    mockApi.getProviderStatus.mockResolvedValue(makeProviderStatus({ provider: "cloud", model: "claude-opus-5" }));
+    render(<App />);
+
+    expect(await screen.findByText(/cloud/i)).toBeInTheDocument();
+    expect(screen.getByText(/claude-opus-5/)).toBeInTheDocument();
   });
 });
 
@@ -107,14 +133,22 @@ describe("sidebar session list", () => {
 });
 
 describe("composer and message flow", () => {
-  it("creates a session and sends the first message, rendering it in the conversation", async () => {
+  it("creates a session, sends a message, and renders both turns", async () => {
     const created = makeSession({ id: "new-session" });
     mockApi.listSessions.mockResolvedValue([]);
     mockApi.createSession.mockResolvedValue(created);
-    const sentMessage = makeMessage({ session_id: "new-session", content: "What is PMF?" });
+    const userMsg = makeMessage({ session_id: "new-session", content: "What is PMF?" });
+    const assistantMsg = makeMessage({
+      id: "message-2",
+      session_id: "new-session",
+      role: "assistant",
+      content: "Product-market fit means...",
+    });
     mockApi.sendMessage.mockResolvedValue({
-      message: sentMessage,
+      message: userMsg,
+      assistant_message: assistantMsg,
       session: { ...created, title: "What is PMF?" },
+      generation_error: null,
     });
     const user = userEvent.setup();
 
@@ -129,10 +163,88 @@ describe("composer and message flow", () => {
     expect(mockApi.sendMessage).toHaveBeenCalledWith("new-session", "What is PMF?");
     const conversationLog = await screen.findByRole("log");
     expect(await within(conversationLog).findByText("What is PMF?")).toBeInTheDocument();
+    expect(within(conversationLog).getByText("Product-market fit means...")).toBeInTheDocument();
     expect(textbox).toHaveValue("");
   });
 
-  it("shows an inline error and restores the draft when sending fails", async () => {
+  it("renders assistant Markdown safely without executing raw HTML", async () => {
+    const session = makeSession();
+    mockApi.listSessions.mockResolvedValue([session]);
+    mockApi.listMessages.mockResolvedValue([
+      makeMessage({
+        role: "assistant",
+        content: "## Key point\n\n- **Bold** idea\n- <img src=x onerror=alert(1)>\n\nSee `code` here.",
+      }),
+    ]);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Key point", level: 3 })).toBeInTheDocument();
+    expect(screen.getByText("Bold").tagName).toBe("STRONG");
+    expect(screen.getByText("code").tagName).toBe("CODE");
+    expect(document.querySelector("img")).not.toBeInTheDocument();
+  });
+
+  it("shows a thinking indicator while generating and replaces it with the reply", async () => {
+    const session = makeSession();
+    mockApi.listSessions.mockResolvedValue([session]);
+    mockApi.listMessages.mockResolvedValue([]);
+    let resolveSend!: (value: unknown) => void;
+    mockApi.sendMessage.mockReturnValue(new Promise((resolve) => (resolveSend = resolve)));
+    const user = userEvent.setup();
+
+    render(<App />);
+    const textbox = await screen.findByLabelText(/message lenny growth assistant/i);
+    await user.type(textbox, "hello");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    expect(await screen.findByText(/thinking through that/i)).toBeInTheDocument();
+    expect(screen.getByText("hello")).toBeInTheDocument(); // shown immediately, not just once the reply lands
+
+    resolveSend({
+      message: makeMessage({ content: "hello" }),
+      assistant_message: makeMessage({ id: "m2", role: "assistant", content: "Hi there" }),
+      session,
+      generation_error: null,
+    });
+
+    expect(await screen.findByText("Hi there")).toBeInTheDocument();
+    expect(screen.queryByText(/thinking through that/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps the user message and shows a retry affordance when generation fails", async () => {
+    const session = makeSession();
+    mockApi.listSessions.mockResolvedValue([session]);
+    mockApi.listMessages.mockResolvedValue([]);
+    mockApi.sendMessage.mockResolvedValue({
+      message: makeMessage({ content: "hello" }),
+      assistant_message: null,
+      session,
+      generation_error: { code: "provider_unavailable", message: "Local model unavailable." },
+    });
+    mockApi.retryMessage.mockResolvedValue({
+      assistant_message: makeMessage({ id: "m2", role: "assistant", content: "Recovered answer" }),
+      session,
+      generation_error: null,
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    const textbox = await screen.findByLabelText(/message lenny growth assistant/i);
+    await user.type(textbox, "hello");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    expect(await screen.findByText("hello")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/local model unavailable/i);
+
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+
+    expect(await screen.findByText("Recovered answer")).toBeInTheDocument();
+    expect(mockApi.retryMessage).toHaveBeenCalledWith(session.id);
+    expect(mockApi.sendMessage).toHaveBeenCalledTimes(1); // retry never resends the user message
+  });
+
+  it("shows an inline error and restores the draft when the send request itself fails", async () => {
     const session = makeSession();
     mockApi.listSessions.mockResolvedValue([session]);
     mockApi.listMessages.mockResolvedValue([]);

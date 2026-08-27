@@ -42,9 +42,28 @@ class Settings(BaseSettings):
     postgres_password: str = "lenny"
     postgres_db: str = "lenny_growth_assistant"
 
+    # --- LLM provider ----------------------------------------------------
+    # "ollama" (local, mandatory for the demo) or "cloud" (Anthropic Claude).
+    # Switching providers is a configuration change only - see
+    # app/services/model_providers/ for the abstraction this selects between.
+    llm_provider: Literal["ollama", "cloud"] = "ollama"
+    # 60s rather than something tighter because CPU-only local inference
+    # (the mandatory Ollama path) can legitimately take that long for a
+    # full response on modest hardware - see docs/architecture.md
+    # "Timeouts and retry" for the measured numbers this is based on.
+    model_timeout_seconds: float = 60.0
+    # How many of the most recent messages in a session are sent to the
+    # model as context. Keeps requests bounded without token counting.
+    max_context_messages: int = 20
+
     # --- Ollama --------------------------------------------------------
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.1:8b"
+    ollama_model: str = "llama3.2:3b"
+
+    # --- Cloud provider (Anthropic) --------------------------------------
+    cloud_provider: Literal["anthropic"] = "anthropic"
+    cloud_model: str = "claude-opus-5"
+    cloud_api_key: str | None = None
 
     # --- Frontend --------------------------------------------------------
     frontend_url: str = "http://localhost:5173"
