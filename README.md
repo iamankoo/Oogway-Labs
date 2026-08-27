@@ -1,16 +1,16 @@
 # Lenny Growth Assistant
 
-An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews, essays, and podcast transcripts. This repository is being built in seven phases; **this README reflects Phase 1 + 2 + 3 + 4 + 5** - the foundation, conversation persistence, a real agent/model layer, real retrieval grounding, and now Ship 30 essay + artifact generation with a native Artifact Viewer. Later phases add resilience/observability polish and final evaluator readiness. Claims below are scoped to what actually exists today.
+An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews, essays, and podcast transcripts. **v1 completed** - the foundation, conversation persistence, a real agent/model layer, real retrieval grounding, and Ship 30 essay + artifact generation with a native Artifact Viewer. Later work adds resilience/observability polish and final evaluator readiness. Claims below are scoped to what actually exists today.
 
-## What exists today (Phase 1-5)
+## What exists today (v1 completed)
 
 - A FastAPI backend with typed configuration, structured logging, centralized error handling, and `/health` / `/health/ready` endpoints (readiness now also checks the active model provider).
-- Real PostgreSQL persistence for conversations: `users` -> `sessions` -> `messages`, plus `artifacts` (Phase 5: Ship 30 essays / Markdown / HTML docs) and (Phase 4) `knowledge_documents` / `knowledge_chunks` / `message_sources` for the knowledge base - all managed through Alembic migrations (see [Database](#database) below).
+- Real PostgreSQL persistence for conversations: `users` -> `sessions` -> `messages`, plus `artifacts` (Ship 30 essays / Markdown / HTML docs) and `knowledge_documents` / `knowledge_chunks` / `message_sources` for the knowledge base - all managed through Alembic migrations (see [Database](#database) below).
 - **A real agent layer** (`backend/app/agents/`) built on **Pi Coding Agent** (`pi-coding-agent`, the required agent framework - see `docs/architecture.md` "Agent framework choice") that retrieves grounding material for each turn, folds it into a real `pi_agent.agent.Agent`'s system prompt, and calls a **model provider abstraction** (`pi_agent.llm`) supporting both a local **Ollama** provider (mandatory for the demo) and a **cloud Anthropic Claude** provider, switchable purely via configuration - see [Model provider](#model-provider) below.
 - **A real knowledge base** (`backend/app/knowledge/`, `backend/app/services/knowledge_retriever.py`), ingested from the official free [Lenny's Data](https://github.com/LennysNewsletter/lennys-newsletterpodcastdata) starter pack (50 podcast transcripts + 10 newsletter posts) - see [Knowledge base](#knowledge-base) below for setup, ingestion, and how retrieval/grounding works.
 - Sending a message triggers a real assistant reply: the user's message is always persisted, the agent retrieves relevant Lenny material and generates a reply, and on success both the reply and its real (never fabricated) source citations are persisted - on failure, the user's message is kept and a safe, retryable error is returned instead of a fabricated response.
-- A React + TypeScript + Tailwind frontend with a premium, editorially-inflected three-pane product shell, a real session sidebar, a subtle provider indicator, safe Markdown-rendered assistant messages, a restrained "thinking" state, inline retry on generation failure, and (Phase 4) real `SourceCard`s shown under a grounded assistant reply.
-- **Ship 30 essays and artifacts** (`backend/app/services/artifact_generation.py`): three actions in the Artifact Viewer - "Ship 30 Essay" (a grounded, hook-first essay), "Markdown doc" (a structured summary), and "HTML page" (a self-contained document) - each grounded through the same Phase 4 retrieval, persisted as `Artifact` rows, and rendered natively beside the chat. Generated HTML renders only inside a fully sandboxed, script-free iframe (`sandbox=""`) - see [Artifacts and HTML security](#artifacts-and-html-security) below.
+- A React + TypeScript + Tailwind frontend with a premium, editorially-inflected three-pane product shell, a real session sidebar, a subtle provider indicator, safe Markdown-rendered assistant messages, a restrained "thinking" state, inline retry on generation failure, and real `SourceCard`s shown under a grounded assistant reply.
+- **Ship 30 essays and artifacts** (`backend/app/services/artifact_generation.py`): three actions in the Artifact Viewer - "Ship 30 Essay" (a grounded, hook-first essay), "Markdown doc" (a structured summary), and "HTML page" (a self-contained document) - each grounded through the same real retrieval, persisted as `Artifact` rows, and rendered natively beside the chat. Generated HTML renders only inside a fully sandboxed, script-free iframe (`sandbox=""`) - see [Artifacts and HTML security](#artifacts-and-html-security) below.
 - Docker Compose orchestrating the backend, frontend, PostgreSQL, and Ollama for local development, with the backend running pending migrations automatically on boot. Knowledge-base ingestion is a separate, explicit, documented command - never part of `docker compose up`.
 
 **Not yet implemented (see "Known limitations" below):** Retrieval is lexical (BM25), not semantic/vector search - see `docs/architecture.md` "Retrieval strategy" for that tradeoff. On the mandatory CPU-only local demo, Ship 30 essays run shorter (~500-600 words) than the ~1,250-word target due to practical latency limits - see `docs/architecture.md` "Ship 30 / content generation and artifacts".
@@ -35,7 +35,7 @@ docker compose exec backend python -m app.knowledge.ingest --source /path/to/kno
 
 (If running via Docker, copy the cloned folder into the backend container first, e.g. `docker cp knowledge_source lenny-growth-assistant-backend-1:/tmp/knowledge_source` and point `--source` at `/tmp/knowledge_source`.)
 
-Verify it worked: `curl http://localhost:8000/api/knowledge/status` should report a non-zero `document_count`/`chunk_count`. Ingestion is idempotent (safe to re-run) and only reprocesses files whose content actually changed - see `docs/architecture.md` "Knowledge base (Phase 4)" for the full pipeline, chunking strategy, retrieval algorithm, and grounding rules.
+Verify it worked: `curl http://localhost:8000/api/knowledge/status` should report a non-zero `document_count`/`chunk_count`. Ingestion is idempotent (safe to re-run) and only reprocesses files whose content actually changed - see `docs/architecture.md`'s knowledge base section for the full pipeline, chunking strategy, retrieval algorithm, and grounding rules.
 
 ## Prerequisites
 
@@ -67,7 +67,7 @@ The `ollama` container starts empty - it does **not** auto-download a model on `
 docker compose exec ollama ollama pull llama3.2:3b
 ```
 
-If you configure a different `OLLAMA_MODEL`, pull that instead. **This step is mandatory** - Phase 3 actually calls Ollama to generate assistant replies; until the configured model is pulled, sending a message will return a clear "model not installed" error rather than a fake response (see [Error handling](#error-handling)).
+If you configure a different `OLLAMA_MODEL`, pull that instead. **This step is mandatory** - the agent actually calls Ollama to generate assistant replies; until the configured model is pulled, sending a message will return a clear "model not installed" error rather than a fake response (see [Error handling](#error-handling)).
 
 **If your machine (or Docker Desktop's memory allocation) is constrained**, drop to a smaller model such as `llama3.2:1b` (~1.3GB) - CPU-only inference of even a 3B model needs a few GB of headroom to load promptly. This assignment's own development environment had Docker Desktop capped at ~3.5GB total RAM across all containers, and `llama3.2:1b` was what actually verified end-to-end there; a typical developer machine with more memory available to Docker should run `llama3.2:3b` (the documented default) without issue. Either way, expect roughly 15-20 tokens/second on CPU-only inference for a model this size - the backend's `MODEL_TIMEOUT_SECONDS` (default 60s) and its `num_predict` cap on response length (400 tokens) are tuned around that, not around GPU-class speed.
 
@@ -124,7 +124,7 @@ See `docs/architecture.md` ("Model provider abstraction" and "Agent architecture
 
 ## Database
 
-Schema: `users (1) -> sessions (many) -> messages (many)`, plus `sessions (1) -> artifacts (many)` reserved for Phase 5. See `docs/architecture.md` for the full column list and rationale (single-user strategy, deterministic title derivation, session-isolation enforcement).
+Schema: `users (1) -> sessions (many) -> messages (many)`, plus `sessions (1) -> artifacts (many)`. See `docs/architecture.md` for the full column list and rationale (single-user strategy, deterministic title derivation, session-isolation enforcement).
 
 Migrations are managed with Alembic (`backend/alembic/`). The backend container runs `alembic upgrade head` automatically before starting uvicorn - via `docker compose up` there is no manual migration step. Running the backend outside Docker:
 
@@ -187,9 +187,9 @@ OL/
 ├── backend/              FastAPI application (app/agents/, app/services/model_providers/, alembic/, tests/)
 ├── frontend/             React + TypeScript + Tailwind application (src/)
 ├── docs/                 PRD, design, and architecture documentation
-├── tests/                Reserved for cross-cutting/integration tests (Phase 2+)
-├── scripts/              Reserved for operational scripts (Phase 2+)
-├── agent_transcripts/    Development history/transcripts for later phases
+├── tests/                Reserved for cross-cutting/integration tests
+├── scripts/              Reserved for operational scripts
+├── agent_transcripts/    Development history/transcripts
 ├── docker-compose.yml    Local orchestration: backend, frontend, postgres, ollama
 └── .env.example          Documented environment variables
 ```
@@ -229,7 +229,7 @@ Assistant generation failures never crash the request or fabricate a response - 
 | Resilience | `AgentError` taxonomy, safe `generation_error` contract for both chat and artifacts | Real timeout observed and handled correctly (Ship 30 generation) |
 | Evaluator handoff | This README + `docs/` | This document |
 
-## Known limitations (honest, as of Phase 7)
+## Known limitations (honest, as of v1)
 
 - **Retrieval is lexical (BM25), not semantic** - a paraphrase sharing no vocabulary with the source material won't be found. See `docs/architecture.md` "Retrieval strategy".
 - **Free starter-pack corpus only** (50 podcasts + 10 newsletters) - the full paid Lenny's Data archive was not available in this environment.
