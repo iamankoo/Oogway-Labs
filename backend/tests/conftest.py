@@ -59,14 +59,21 @@ def _stub_model_provider_by_default(monkeypatch: pytest.MonkeyPatch):
     ``monkeypatch.setattr("app.api.sessions.get_model_provider", ...)``
     within the test itself, which simply takes effect after this one.
     """
-    from app.services.model_providers.base import ModelProvider, ProviderMessage, ProviderResponse
+    from typing import Any
 
-    class _DefaultStubProvider(ModelProvider):
-        provider_name = "ollama"
-        model_name = "stub-model"
+    from pi_agent.llm import AssistantResponse, NeutralMessage
 
-        async def generate(self, *, system: str, messages: list[ProviderMessage]) -> ProviderResponse:
-            return ProviderResponse(content="stub response", model=self.model_name, latency_ms=0)
+    class _DefaultStubProvider:
+        """Conforms to ``pi_agent.llm.LLMProvider`` without any network access."""
+
+        name = "ollama"
+        model = "stub-model"
+        supports_streaming = False
+
+        def complete(
+            self, system: str, messages: list[NeutralMessage], tools: list[dict[str, Any]]
+        ) -> AssistantResponse:
+            return AssistantResponse(text="stub response")
 
     monkeypatch.setattr("app.api.sessions.get_model_provider", lambda _settings: _DefaultStubProvider())
 

@@ -1,10 +1,8 @@
-"""Model provider abstraction.
+"""Model provider selection for the agent layer.
 
-``ModelProvider`` is the single interface the agent layer depends on.
-``OllamaProvider`` and ``AnthropicProvider`` are the two implementations;
-``factory.get_model_provider`` picks between them based on
-``Settings.llm_provider``. Nothing above this package's boundary
-branches on which provider is active - the agent layer, the API layer,
-and the frontend all interact with "the configured provider," never
-with Ollama or Anthropic specifics directly.
+The actual provider implementations (``LLMProvider``, ``OpenAIProvider``,
+``AnthropicProvider``) come from ``pi-coding-agent`` - the required agent
+framework (see ``docs/architecture.md`` "Agent framework choice"), not
+from a hand-rolled class here. ``factory.get_model_provider`` is the only
+place that picks between them based on ``Settings.llm_provider``.
 """

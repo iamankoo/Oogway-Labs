@@ -11,8 +11,9 @@ Frontend (React/Vite)
 FastAPI API  (backend/app/main.py, backend/app/api/)
     |
     v
-Agent layer  (backend/app/agents/)         <- Phase 3
-    |  GrowthAssistantAgent: persona + conversation context -> one provider call
+Agent layer  (backend/app/agents/)         <- Phase 3 / corrected
+    |  GrowthAssistantAgent: persona + conversation context
+    |  -> pi_agent.agent.Agent (pi-coding-agent, the required agent framework)
     |
     +-- Skills + Tools                     <- Phase 4/5 (not yet built)
     |     +-- Grounded QA (retrieval)
@@ -26,23 +27,29 @@ Retrieval / Knowledge Layer                <- Phase 4 (not yet built)
 PostgreSQL (persistence)  +  vector-capable index (later)
     |
     v
-Model Provider Abstraction (backend/app/services/model_providers/)   <- Phase 3
-    +-- OllamaProvider  -> Ollama container (mandatory demo path)
+Model Provider Abstraction (pi_agent.llm, from pi-coding-agent)   <- corrected
+    +-- OpenAIProvider(base_url=Ollama's /v1)  -> Ollama container (mandatory demo path)
     +-- AnthropicProvider -> Anthropic Claude API (cloud path)
 ```
 
-Phase 1 built everything above the "Agent layer" line, plus the raw infrastructure (PostgreSQL, Ollama) below it. Phase 2 filled in the PostgreSQL box with a real schema. Phase 3 builds the agent layer and the model provider abstraction and wires them together: sending a message now really invokes a configured LLM and persists its reply. The skills/retrieval layers remain deliberate placeholders - the agent has a persona and conversation history, but no external knowledge source yet.
+Phase 1 built everything above the "Agent layer" line, plus the raw infrastructure (PostgreSQL, Ollama) below it. Phase 2 filled in the PostgreSQL box with a real schema. Phase 3 built the agent layer and a model provider abstraction and wired them together: sending a message really invokes a configured LLM and persists its reply. A subsequent **Phase 3 compliance correction** (see "Agent framework choice" below) replaced Phase 3's hand-rolled `ModelProvider`/`GrowthAssistantAgent` internals with the assignment's actually-required agent framework, **pi-coding-agent**, without changing anything above or below that layer. The skills/retrieval layers remain deliberate placeholders - the agent has a persona and conversation history, but no external knowledge source yet.
 
 ## Agent framework choice
 
-The assignment asks for agent integration via the **Anthropic Claude Agent SDK** or **Pi Coding Agent**. Neither fits this system directly, and using either literally would have actively worked against the assignment's other hard requirements:
+The assignment requires agent integration via the **Anthropic Claude Agent SDK** or **Pi Coding Agent** - a custom class named "Agent" wrapping a provider does not satisfy this on its own, and Phase 3's original `GrowthAssistantAgent` (a hand-rolled wrapper around a hand-rolled `ModelProvider` ABC) was exactly that: architecturally clean, but not an instance of either required framework. This section documents the correction.
 
-- The **Claude Agent SDK** (`claude-agent-sdk` / `@anthropic-ai/claude-agent-sdk`) is Claude Code packaged as a library - it ships a harness built around autonomous coding/computer-use (built-in file read/write/edit, bash, grep, web search) and is Anthropic-model-only. It has no notion of routing to a local Ollama model, which the assignment makes mandatory for the demo. Adopting it would mean either faking Ollama support or dropping the mandatory local-provider requirement - neither is acceptable.
-- **Pi Coding Agent** is, likewise, a coding-focused agent tool - built for operating a codebase, not for holding a product/growth advice conversation with provider-agnostic model routing.
+**Claude Agent SDK was evaluated and rejected.** `claude-agent-sdk` (`pip install claude-agent-sdk`, v0.2.145 at evaluation time) is Claude Code packaged as a library: it drives the full Claude Code CLI as a subprocess, and `ClaudeAgentOptions` has no `base_url` or `api_key` override - there is no supported way to point it at anything but Anthropic's own API. Even if there were, Ollama doesn't speak Anthropic's Messages API wire format, so the mandatory local-model demo path would be unreachable. Installing it also pulled in an `mcp` dependency that upgraded `starlette` past the range this project's pinned FastAPI version supports, breaking the app outright. Adopting it would have meant dropping the mandatory Ollama requirement - not acceptable per the assignment - so it was ruled out.
 
-What the assignment actually asks for, underneath the specific SDK names, is: *don't call an LLM HTTP API directly from a route and call that "the agent layer" - have a real agent abstraction.* That's what `backend/app/agents/` is: `GrowthAssistantAgent` owns the assistant's persona (`prompts.py`), turns a session's persisted messages into bounded conversation context, and delegates the actual completion to whichever `ModelProvider` is configured - it never talks to Ollama or Anthropic's wire format itself. For the cloud path, generation goes through the **official `anthropic` Python SDK's Messages API** (`client.messages.create`) - the standard, production-appropriate way to call Claude for a conversational assistant, as opposed to the Agent SDK's autonomous-coding harness. This keeps the demo's mandatory local-model requirement intact while still giving a real, swappable agent abstraction and a real Anthropic integration.
+**Pi Coding Agent (`pi-coding-agent` on PyPI, v0.6.0) is what's actually integrated.** It is a real, independently-installable multi-provider coding agent with its own `LLMProvider` protocol (`pi_agent.llm`) and its own agent orchestration loop (`pi_agent.agent.Agent`) - not a class this project invented and named "Agent" to claim compliance. Concretely:
 
-If a genuinely open-ended, tool-using agent becomes necessary (e.g. Phase 4's retrieval, or a future artifact-generation skill), `GrowthAssistantAgent` is the natural place to add tool-calling - either a hand-rolled loop or the Anthropic SDK's Tool Runner (`client.beta.messages.tool_runner`) - without changing the provider abstraction underneath it.
+- `app/services/model_providers/factory.py` constructs a real `pi_agent.llm.LLMProvider` instance - `pi_agent.llm.OpenAIProvider` for Ollama, `pi_agent.llm.AnthropicProvider` for cloud (see "Model provider abstraction" below).
+- `app/agents/growth_assistant.py`'s `GrowthAssistantAgent` constructs and drives a real `pi_agent.agent.Agent` on every turn: `PiAgent(provider=..., registry=ToolRegistry([]), sandbox=Sandbox(...), config=AgentConfig(...), messages=...)`, then calls its **actual, synchronous `.run(user_input)` method** (bridged into the async request path via `asyncio.to_thread`, with `asyncio.wait_for` enforcing `MODEL_TIMEOUT_SECONDS` around it). This is pi-coding-agent's real ReAct tool-use loop, its real transient-error retry with exponential backoff (`AgentConfig.max_retries`), and its real history-trimming (`AgentConfig.max_history_messages`) - not a reimplementation.
+- The tool registry is intentionally **empty** (`ToolRegistry([])`): this is a conversational product/growth advisor, not a coding agent, so it is given zero coding tools. With nothing for the model to call, pi-agent's loop always resolves in exactly one iteration - `AgentConfig(max_iterations=1)` makes that explicit rather than relying on an empty registry alone. Phase 4/5 tool integrations (retrieval, artifacts) add real tools to this same registry without changing `GrowthAssistantAgent`'s shape.
+- `Sandbox` is pi-agent's filesystem-confinement guard, required by `Agent`'s constructor but never actually resolved, since no registered tool ever touches a path.
+
+**Ollama support goes through pi-coding-agent's own documented mechanism, not a workaround.** pi-coding-agent ships a first-class `ollama` provider entry (`pi_agent.llm.PROVIDERS["ollama"]`: `kind="openai"`, `base_url="http://localhost:11434/v1"`, `requires_key=False`) precisely because Ollama exposes an OpenAI-compatible `/v1` endpoint. `factory.get_model_provider` reuses that exact mechanism, pointed at this application's own `Settings.ollama_base_url` (so it resolves correctly both on the host and inside Docker Compose, where the hostname is `ollama` rather than `localhost`) rather than pi-agent's own hardcoded local default.
+
+The provider abstraction above the framework boundary is preserved: `factory.get_model_provider(settings)` remains the single place that branches on `Settings.llm_provider`, and everything above it (the agent, the API, the frontend's provider indicator) still depends only on an `LLMProvider`-shaped object, never on Ollama's or Anthropic's wire format directly - the abstraction now comes from the required framework itself instead of a hand-rolled ABC, which is a strictly better fit for "have a real agent framework own agent-level behavior."
 
 ## Why a modular monolith
 
@@ -76,8 +83,10 @@ backend/
     │   └── responses.py  Shared Pydantic response models.
     ├── agents/
     │   ├── prompts.py       SYSTEM_PROMPT - the assistant's base instruction.
-    │   ├── growth_assistant.py  GrowthAssistantAgent: context construction
-    │   │                        + timeout wrapping + a ModelProvider call.
+    │   ├── growth_assistant.py  GrowthAssistantAgent: constructs and drives a
+    │   │                        real pi_agent.agent.Agent (the required agent
+    │   │                        framework) per turn, with a zero-tool registry
+    │   │                        + a wall-clock timeout wrapper.
     │   └── errors.py         AgentError taxonomy (see "Assistant generation
     │                         failure semantics" below).
     ├── db/
@@ -93,14 +102,18 @@ backend/
         ├── conversations.py       Data-access layer: create/list/get
         │                          sessions, list/create messages. Owns
         │                          session isolation and title derivation.
-        └── model_providers/       The model provider abstraction (Phase 3).
-            ├── base.py              `ModelProvider` ABC + `ProviderResponse`.
-            ├── ollama_provider.py   `OllamaProvider` (mandatory demo path).
-            ├── anthropic_provider.py `AnthropicProvider` (cloud path).
-            └── factory.py           Picks a provider from `Settings.llm_provider`.
+        └── model_providers/       Selects a pi-coding-agent LLMProvider.
+            ├── __init__.py          Documents that the provider types
+            │                        themselves come from pi_agent.llm, not
+            │                        from a class defined in this package.
+            └── factory.py           `get_model_provider(settings)`: the only
+                                      place that branches on
+                                      `Settings.llm_provider`, returning a
+                                      real `pi_agent.llm.OpenAIProvider`
+                                      (Ollama) or `AnthropicProvider` (cloud).
 ```
 
-**Why this split:** `api/` never talks to a model provider directly - it depends on the agent layer (`app/agents/`), which itself depends only on the `ModelProvider` abstraction, never on Ollama or Anthropic specifics. This keeps HTTP concerns (status codes, request/response shapes) separate from "how do I get an answer out of a model," so adding a third provider or a genuinely different agent (tool-using, multi-step) never touches `api/sessions.py`'s HTTP contract. `app/domain/` from Phase 1's plan was folded into `app/agents/` once the actual shape of "agent orchestration" became concrete - a separate empty `domain/` package alongside a populated `agents/` package would have been redundant.
+**Why this split:** `api/` never talks to a model provider directly - it depends on the agent layer (`app/agents/`), which itself depends only on `pi_agent.llm.LLMProvider`, never on Ollama or Anthropic specifics. This keeps HTTP concerns (status codes, request/response shapes) separate from "how do I get an answer out of a model," so adding a third provider or extending the agent (tool-using, multi-step) never touches `api/sessions.py`'s HTTP contract. `app/domain/` from Phase 1's plan was folded into `app/agents/` once the actual shape of "agent orchestration" became concrete - a separate empty `domain/` package alongside a populated `agents/` package would have been redundant.
 
 ### Configuration
 
@@ -151,22 +164,24 @@ This is a single-user take-home application with no login/signup flow. Every ses
 
 ### Model provider abstraction
 
-`app/services/model_providers/base.py` defines `ModelProvider`, an ABC with one method: `async generate(*, system: str, messages: list[ProviderMessage]) -> ProviderResponse`. Everything above this boundary - the agent, the API, the frontend's provider indicator - depends only on that interface, never on Ollama's or Anthropic's wire format. Two implementations exist today:
+`pi_agent.llm.LLMProvider` (from the `pi-coding-agent` package - the required agent framework) is the protocol everything above this boundary depends on: one method, `complete(system, messages, tools) -> AssistantResponse`. Neither the agent, the API, nor the frontend's provider indicator talks to Ollama's or Anthropic's wire format directly. Two concrete providers are used, both pi-coding-agent's own, not hand-rolled:
 
-- **`OllamaProvider`** (`ollama_provider.py`) - a thin `httpx` client against Ollama's own `POST /api/chat` (there is no official Ollama Python SDK, and one HTTP endpoint doesn't justify adopting a third-party wrapper). This is the **mandatory demo path** (`LLM_PROVIDER=ollama`, the default).
-- **`AnthropicProvider`** (`anthropic_provider.py`) - the official `anthropic` Python SDK's async Messages API (`AsyncAnthropic().messages.create`). Selected via `LLM_PROVIDER=cloud`.
+- **`pi_agent.llm.OpenAIProvider`**, pointed at Ollama's OpenAI-compatible `/v1` endpoint (`base_url=f"{OLLAMA_BASE_URL}/v1"`) - this is pi-coding-agent's own documented mechanism for reaching Ollama (see "Agent framework choice" above), not a workaround invented for this project. This is the **mandatory demo path** (`LLM_PROVIDER=ollama`, the default).
+- **`pi_agent.llm.AnthropicProvider`**, wrapping the official `anthropic` Python SDK's Messages API. Selected via `LLM_PROVIDER=cloud`.
 
-`factory.get_model_provider(settings)` is the *only* place that branches on `settings.llm_provider` - adding a third provider means one new class plus one new branch here, nothing else changes. Both providers normalize every failure mode into the same `app.agents.errors.AgentError` subclasses (see below) so the agent and API layers handle "the provider failed" identically regardless of which provider is active.
+`app/services/model_providers/factory.py::get_model_provider(settings)` is the *only* place that branches on `settings.llm_provider` - adding a third provider means one new branch here, nothing else changes. `GrowthAssistantAgent` catches every `openai.*`/`anthropic.*` SDK exception either provider's `.complete()` call can raise and normalizes it into the same `app.agents.errors.AgentError` subclasses (see below), so the agent and API layers handle "the provider failed" identically regardless of which provider is active.
 
 **Configuration surface** (`.env.example`): `LLM_PROVIDER`, `MODEL_TIMEOUT_SECONDS`, `MAX_CONTEXT_MESSAGES` govern both providers; `OLLAMA_BASE_URL`/`OLLAMA_MODEL` govern the local path; `CLOUD_PROVIDER`/`CLOUD_MODEL`/`CLOUD_API_KEY` govern the cloud path. Switching providers is restarting the backend process with a different `.env` - no code change, and the frontend's provider indicator and `/health/ready` both pick up the new configuration automatically because they read it live from `Settings`, never from anything cached client-side.
 
 ### Agent architecture
 
-`app/agents/growth_assistant.py`'s `GrowthAssistantAgent` is constructed with a `ModelProvider` plus `max_context_messages` and `timeout_seconds` (both from `Settings`). Its `respond(history: list[Message])`:
+`app/agents/growth_assistant.py`'s `GrowthAssistantAgent` is constructed with an `LLMProvider` plus `max_context_messages` and `timeout_seconds` (both from `Settings`). Its `respond(history: list[Message])`:
 
-1. Filters `history` down to `user`/`assistant` messages (system messages, if any exist in the future, are never sent back to the model as conversation turns) and takes the most recent `max_context_messages` of them - see "Session context" below.
-2. Calls `provider.generate(system=SYSTEM_PROMPT, messages=context)`, wrapped in `asyncio.wait_for(..., timeout=timeout_seconds)` as a provider-independent safety net on top of each provider's own HTTP-level timeout.
-3. Returns an `AgentResult` (content, provider name, model name, latency) - the API layer decides what to persist and what to expose; the agent itself never touches the database.
+1. Filters `history` down to `user`/`assistant` messages (system messages, if any exist in the future, are never sent back to the model as conversation turns) and splits it into "prior turns" and "the pending user turn" (the last message, always the just-persisted user message).
+2. Builds a real `pi_agent.agent.Agent` (`PiAgent`), seeded with the prior turns translated into pi-agent's neutral transcript format, configured with `system_prompt=SYSTEM_PROMPT`, `max_iterations=1`, an **empty tool registry** (`ToolRegistry([])` - this is a conversational advisor, not a coding agent), and `max_history_messages=max_context_messages` so pi-agent's own trimming enforces the context bound (see "Session context" below).
+3. Calls the real `PiAgent.run(pending_user_content)` - a **synchronous** method - via `asyncio.to_thread(...)`, wrapped in `asyncio.wait_for(..., timeout=timeout_seconds)` as a provider-independent safety net on top of pi-agent's own transient-error retry.
+4. Catches `openai.*`/`anthropic.*` SDK exceptions the underlying provider raised and maps them to the appropriate `AgentError` subclass.
+5. Returns an `AgentResult` (content, provider name, model name, latency, input/output token usage from `PiAgent.total_usage`) - the API layer decides what to persist and what to expose; the agent itself never touches the database.
 
 `app/agents/prompts.py`'s `SYSTEM_PROMPT` is the assistant's base instruction. It explicitly tells the model it has **no access to Lenny's transcripts yet** and must never fabricate an episode, guest, or quote - this is the mechanism that keeps Phase 3 honest about not being grounded, and it must be updated (not silently left as-is) once Phase 4 actually wires up retrieval.
 
@@ -187,17 +202,19 @@ This is the contract every "what happens on failure" question in the assignment 
 
 ### Streaming decision
 
-Phase 3 uses a **single non-streaming response** per turn, not token-by-token streaming. Both Ollama (`stream: false`) and the Anthropic SDK support streaming, so this was a deliberate simplicity choice, not a technical limitation: introducing SSE/websocket plumbing, partial-message persistence semantics, and stream-cancellation-on-session-switch would have added meaningful architectural surface area for one phase, for a benefit (perceived latency) that a well-designed "thinking" state substantially covers already (see `docs/design.md`). The response time is still bounded by `MODEL_TIMEOUT_SECONDS`, so the user is never left waiting indefinitely. Streaming remains a clean addition later: it would replace `ModelProvider.generate`'s single-shot return with an async generator, without changing the agent's or API's external contract in a way that touches session isolation or persistence semantics.
+Phase 3 uses a **single non-streaming response** per turn, not token-by-token streaming. Both Ollama (`stream: false`) and the Anthropic SDK support streaming, so this was a deliberate simplicity choice, not a technical limitation: introducing SSE/websocket plumbing, partial-message persistence semantics, and stream-cancellation-on-session-switch would have added meaningful architectural surface area for one phase, for a benefit (perceived latency) that a well-designed "thinking" state substantially covers already (see `docs/design.md`). The response time is still bounded by `MODEL_TIMEOUT_SECONDS`, so the user is never left waiting indefinitely. Streaming remains a clean addition later: pi-coding-agent's providers already expose a `.stream()` method (used by `AgentConfig.stream=True` when a caller supplies an event callback), so enabling it would mean passing `on_event` into `PiAgent` and adapting its deltas to an SSE/websocket response, without changing the agent's or API's external contract in a way that touches session isolation or persistence semantics.
 
 ### Timeouts and retry (provider-level)
 
-Every provider call has an explicit timeout at two layers: the provider's own HTTP client (`httpx.AsyncClient(timeout=...)` for Ollama, the `anthropic` client's `timeout=` for the cloud path) and the agent's `asyncio.wait_for` wrapper, both driven by the single `MODEL_TIMEOUT_SECONDS` setting (default **60s**) - a request can never hang past that, regardless of which provider misbehaves. There is no automatic retry-with-backoff inside a single request (beyond what the `anthropic` SDK already does internally for 429/5xx); the user-facing retry described above is the explicit, safe recovery path instead, so "how many times did this actually run" is never ambiguous in the logs.
+The agent's `asyncio.wait_for` wrapper around `PiAgent.run()` (via `asyncio.to_thread`) enforces a hard wall-clock ceiling driven by `MODEL_TIMEOUT_SECONDS` (default **60s**) - a request can never hang past that, regardless of which provider misbehaves, since a synchronous SDK call has no other way to be preempted. Underneath that, pi-coding-agent's own `Agent._with_retry` retries transient errors (rate limits, 5xx, timeouts, dropped connections - identified by HTTP status or exception name, matching both the `openai` and `anthropic` SDKs' hierarchies) with exponential backoff and jitter, up to `AgentConfig.max_retries` (3) attempts, before the error ever reaches `GrowthAssistantAgent`'s exception mapping. On top of that, the user-facing retry endpoint described above remains the explicit, safe recovery path for whatever still fails after those retries, so "how many times did this actually run" is never ambiguous in the logs.
 
-Two numbers here are tuned from real measurement, not guessed: `OllamaProvider` caps output at `num_predict: 400` tokens, and the timeout default is 60s rather than something tighter. Both come directly from live-testing this phase's mandatory demo path: on modest CPU-only hardware, a small model (`llama3.2:1b`/`3b`) generates at roughly **16-17 tokens/second**, and the assistant's own system prompt encourages structured, multi-section answers - an uncapped response could run past 600-800 tokens, i.e. 35-50+ seconds, before a client even finishes reading it. Capping output length is the primary lever (it bounds worst-case latency predictably, the way `max_tokens` already does on the cloud path); the 60s timeout is the backstop for whatever that cap doesn't cover (a cold model load, contended hardware). Both are configurable per deployment - faster hardware or a GPU can lower `MODEL_TIMEOUT_SECONDS`, and the token cap can move to a per-request setting if a future phase needs longer-form answers.
+Two numbers here are tuned from real measurement, not guessed: `factory.get_model_provider` caps Ollama's `max_tokens` at 400, and the timeout default is 60s rather than something tighter. Both come directly from live-testing this phase's mandatory demo path: on modest CPU-only hardware, a small model (`llama3.2:1b`/`3b`) generates at roughly **16-17 tokens/second**, and the assistant's own system prompt encourages structured, multi-section answers - an uncapped response could run past 600-800 tokens, i.e. 35-50+ seconds, before a client even finishes reading it. Capping output length is the primary lever (it bounds worst-case latency predictably, the way the cloud path's own `max_tokens` cap already does); the 60s timeout is the backstop for whatever that cap doesn't cover (a cold model load, contended hardware). Both are configurable per deployment - faster hardware or a GPU can lower `MODEL_TIMEOUT_SECONDS`, and the token cap can move to a per-request setting if a future phase needs longer-form answers.
 
 ### Observability
 
-Every generation attempt logs through the existing Phase 1 structlog setup: `assistant_generation_succeeded` (session id, provider, model, latency_ms) on success, `assistant_generation_failed` (session id, provider, error code) on failure - both in `app/api/sessions.py`. Message *content* is never logged, on either path - only identifiers and metadata, per the assignment's "avoid dumping complete conversation contents into production logs" requirement. The same provider/model/latency/status triple is also persisted on the assistant `Message` row itself (`extra_metadata` JSON column) for later inspection without needing to correlate against application logs - never anything resembling hidden reasoning or the raw system prompt.
+Every generation attempt logs through the existing Phase 1 structlog setup: `assistant_generation_succeeded` (session id, provider, model, latency_ms) on success, `assistant_generation_failed` (session id, provider, error code) on failure - both in `app/api/sessions.py`. Message *content* is never logged, on either path - only identifiers and metadata, per the assignment's "avoid dumping complete conversation contents into production logs" requirement. The same provider/model/latency/status triple is also persisted on the assistant `Message` row itself (`extra_metadata` JSON column, never exposed by `MessageOut`/the API) for later inspection without needing to correlate against application logs - never anything resembling hidden reasoning or the raw system prompt.
+
+On success, the logged/persisted `provider` value is the pi-coding-agent provider class's own self-identification (`LLMProvider.name`) - `"openai"` for the Ollama path (since pi-agent implements Ollama support as its `OpenAIProvider` pointed at Ollama's OpenAI-compatible endpoint) or `"anthropic"` for the cloud path - not `Settings.llm_provider`'s `"ollama"`/`"cloud"` labels. This is an intentional, honest reflection of which concrete client actually made the HTTP call, not a mislabeling; the UI's provider badge and `/health/ready` are unaffected, since both read `Settings.llm_provider` directly rather than this log field.
 
 ### Concurrency considerations
 

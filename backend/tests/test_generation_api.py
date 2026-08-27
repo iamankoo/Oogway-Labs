@@ -1,34 +1,43 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from httpx import AsyncClient
+from pi_agent.llm import AssistantResponse, NeutralMessage
 
 from app.agents.errors import ModelTimeoutError, ProviderUnavailableError
-from app.services.model_providers.base import ModelProvider, ProviderMessage, ProviderResponse
 
 
-class _StubProvider(ModelProvider):
-    provider_name = "ollama"
-    model_name = "llama3.2:3b"
+class _StubProvider:
+    """Conforms to pi_agent.llm.LLMProvider without any network access."""
+
+    name = "ollama"
+    model = "llama3.2:3b"
+    supports_streaming = False
 
     def __init__(self, *, content: str | None = None, error: Exception | None = None) -> None:
         self._content = content
         self._error = error
-        self.calls: list[list[ProviderMessage]] = []
+        self.calls: list[list[NeutralMessage]] = []
 
-    async def generate(self, *, system: str, messages: list[ProviderMessage]) -> ProviderResponse:
-        self.calls.append(messages)
+    def complete(
+        self, system: str, messages: list[NeutralMessage], tools: list[dict[str, Any]]
+    ) -> AssistantResponse:
+        # Copy: pi_agent.Agent appends the assistant reply to this same list
+        # object right after complete() returns.
+        self.calls.append(list(messages))
         if self._error:
             raise self._error
         assert self._content is not None
-        return ProviderResponse(content=self._content, model=self.model_name, latency_ms=10)
+        return AssistantResponse(text=self._content)
 
 
 @pytest.fixture
 def stub_provider(monkeypatch: pytest.MonkeyPatch):
     provider = _StubProvider(content="Focus on activation first.")
 
-    def _factory(_settings: object) -> ModelProvider:
+    def _factory(_settings: object) -> _StubProvider:
         return provider
 
     monkeypatch.setattr("app.api.sessions.get_model_provider", _factory)

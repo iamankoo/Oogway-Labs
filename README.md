@@ -6,7 +6,7 @@ An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews
 
 - A FastAPI backend with typed configuration, structured logging, centralized error handling, and `/health` / `/health/ready` endpoints (readiness now also checks the active model provider).
 - Real PostgreSQL persistence for conversations: `users` -> `sessions` -> `messages`, plus an `artifacts` table reserved for Phase 5, managed through Alembic migrations (see [Database](#database) below).
-- **A real agent layer** (`backend/app/agents/`) that builds conversation context from persisted messages and calls a **model provider abstraction** (`backend/app/services/model_providers/`) supporting both a local **Ollama** provider (mandatory for the demo) and a **cloud Anthropic Claude** provider, switchable purely via configuration - see [Model provider](#model-provider) below.
+- **A real agent layer** (`backend/app/agents/`) built on **Pi Coding Agent** (`pi-coding-agent`, the required agent framework - see `docs/architecture.md` "Agent framework choice") that builds conversation context from persisted messages and drives a real `pi_agent.agent.Agent`, which itself calls a **model provider abstraction** (`pi_agent.llm`) supporting both a local **Ollama** provider (mandatory for the demo, via Ollama's OpenAI-compatible endpoint) and a **cloud Anthropic Claude** provider, switchable purely via configuration - see [Model provider](#model-provider) below.
 - Sending a message now triggers a real assistant reply: the user's message is always persisted, the agent is invoked, and on success the assistant's reply is persisted too - on failure, the user's message is kept and a safe, retryable error is returned instead of a fabricated response.
 - A React + TypeScript + Tailwind frontend with a premium, editorially-inflected three-pane product shell, a real session sidebar, a subtle provider indicator ("● Local · llama3.2:3b"), safe Markdown-rendered assistant messages, a restrained "thinking" state, and inline retry on generation failure.
 - Docker Compose orchestrating the backend, frontend, PostgreSQL, and Ollama for local development, with the backend running pending migrations automatically on boot.
@@ -70,8 +70,8 @@ Open http://localhost:5173 to use the app: create a conversation, send a message
 
 See `docs/architecture.md` ("Model provider abstraction" and "Agent architecture") for the full design. In short:
 
-- `LLM_PROVIDER=ollama` (default) - routes through `OllamaProvider`, calling the Ollama container's `/api/chat`. This is the **mandatory demo path**.
-- `LLM_PROVIDER=cloud` - routes through `AnthropicProvider`, calling the real Anthropic Messages API via the official `anthropic` Python SDK. Requires `CLOUD_API_KEY` (get one at https://console.anthropic.com/) and, optionally, a different `CLOUD_MODEL` (default `claude-opus-5`).
+- `LLM_PROVIDER=ollama` (default) - routes through pi-coding-agent's `OpenAIProvider`, pointed at the Ollama container's OpenAI-compatible `/v1` endpoint. This is the **mandatory demo path**.
+- `LLM_PROVIDER=cloud` - routes through pi-coding-agent's `AnthropicProvider`, calling the real Anthropic Messages API via the official `anthropic` Python SDK underneath. Requires `CLOUD_API_KEY` (get one at https://console.anthropic.com/) and, optionally, a different `CLOUD_MODEL` (default `claude-opus-5`).
 - Switching providers is a `.env` change only - `docker compose restart backend` (or just restart the backend process locally) picks it up. No code changes, no frontend changes: the sidebar's provider indicator and `/health/ready`'s provider check both reflect whichever is configured.
 - Without cloud credentials, `LLM_PROVIDER=cloud` produces a clean, safe error (`missing_credentials`) on every send attempt rather than crashing the app or falling back to a different provider silently.
 

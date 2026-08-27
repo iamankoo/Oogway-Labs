@@ -35,7 +35,7 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 |-------|-------|
 | 1 (done) | Architecture, FastAPI + React foundation, Docker Compose, health/readiness, design system, docs |
 | 2 (done) | PostgreSQL schema for users/conversations/messages, Alembic migrations, conversation API, real session/message persistence wired into a redesigned conversation UI |
-| 3 (this phase) | Real agent layer + model provider abstraction (Ollama mandatory local, Anthropic Claude cloud), assistant reply generation and persistence, retry semantics, Markdown-rendered assistant messages, provider visibility in the UI |
+| 3 (this phase) | Real agent layer, built on the required **Pi Coding Agent** framework (`pi-coding-agent`, see `docs/architecture.md` "Agent framework choice"), + model provider abstraction (Ollama mandatory local, Anthropic Claude cloud), assistant reply generation and persistence, retry semantics, Markdown-rendered assistant messages, provider visibility in the UI |
 | 4 | Lenny transcript ingestion/RAG (Grounded QA), Ship 30 for 30 skill |
 | 5 | Artifact generation and a sanitized artifact viewer |
 | 6 | Resilience hardening (timeouts, retries, degraded-mode behavior) |
