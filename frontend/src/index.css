@@ -1,0 +1,156 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens for the Lenny Growth Assistant.
+ * Colors are expressed as HSL channel triples so Tailwind utilities like
+ * `bg-surface` or `text-foreground` can apply opacity modifiers.
+ * Light values live on :root; dark values override under prefers-color-scheme
+ * and the explicit [data-theme="dark"] escape hatch used by the theme toggle.
+ */
+:root {
+  --color-background: 40 20% 98%;
+  --color-surface: 0 0% 100%;
+  --color-surface-raised: 0 0% 100%;
+  --color-foreground: 222 30% 12%;
+  --color-muted: 220 14% 46%;
+  --color-muted-surface: 220 20% 95%;
+  --color-border: 220 16% 88%;
+  --color-border-strong: 220 14% 78%;
+
+  --color-primary: 168 76% 24%;
+  --color-primary-foreground: 0 0% 100%;
+  --color-primary-muted: 168 40% 94%;
+
+  --color-accent: 220 14% 96%;
+  --color-accent-foreground: 222 30% 12%;
+
+  --color-success: 152 60% 32%;
+  --color-warning: 38 92% 40%;
+  --color-danger: 358 66% 46%;
+
+  --color-ring: 168 76% 30%;
+
+  --shadow-color: 220 40% 20%;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.25rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-background: 222 28% 8%;
+    --color-surface: 222 26% 11%;
+    --color-surface-raised: 222 24% 14%;
+    --color-foreground: 210 20% 96%;
+    --color-muted: 216 14% 68%;
+    --color-muted-surface: 222 20% 16%;
+    --color-border: 222 16% 20%;
+    --color-border-strong: 222 16% 28%;
+
+    --color-primary: 166 62% 46%;
+    --color-primary-foreground: 222 30% 8%;
+    --color-primary-muted: 166 30% 18%;
+
+    --color-accent: 222 20% 16%;
+    --color-accent-foreground: 210 20% 96%;
+
+    --color-success: 152 50% 48%;
+    --color-warning: 40 90% 55%;
+    --color-danger: 358 76% 62%;
+
+    --color-ring: 166 62% 50%;
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-background: 222 28% 8%;
+  --color-surface: 222 26% 11%;
+  --color-surface-raised: 222 24% 14%;
+  --color-foreground: 210 20% 96%;
+  --color-muted: 216 14% 68%;
+  --color-muted-surface: 222 20% 16%;
+  --color-border: 222 16% 20%;
+  --color-border-strong: 222 16% 28%;
+
+  --color-primary: 166 62% 46%;
+  --color-primary-foreground: 222 30% 8%;
+  --color-primary-muted: 166 30% 18%;
+
+  --color-accent: 222 20% 16%;
+  --color-accent-foreground: 210 20% 96%;
+
+  --color-success: 152 50% 48%;
+  --color-warning: 40 90% 55%;
+  --color-danger: 358 76% 62%;
+
+  --color-ring: 166 62% 50%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--color-background));
+  --color-surface: hsl(var(--color-surface));
+  --color-surface-raised: hsl(var(--color-surface-raised));
+  --color-foreground: hsl(var(--color-foreground));
+  --color-muted: hsl(var(--color-muted));
+  --color-muted-surface: hsl(var(--color-muted-surface));
+  --color-border: hsl(var(--color-border));
+  --color-border-strong: hsl(var(--color-border-strong));
+
+  --color-primary: hsl(var(--color-primary));
+  --color-primary-foreground: hsl(var(--color-primary-foreground));
+  --color-primary-muted: hsl(var(--color-primary-muted));
+
+  --color-accent: hsl(var(--color-accent));
+  --color-accent-foreground: hsl(var(--color-accent-foreground));
+
+  --color-success: hsl(var(--color-success));
+  --color-warning: hsl(var(--color-warning));
+  --color-danger: hsl(var(--color-danger));
+  --color-ring: hsl(var(--color-ring));
+
+  --font-sans: "Inter var", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    color-scheme: light dark;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: hsl(var(--color-primary) / 0.2);
+  }
+
+  :focus-visible {
+    outline: 2px solid hsl(var(--color-ring));
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--color-border-strong)) transparent;
+  }
+}

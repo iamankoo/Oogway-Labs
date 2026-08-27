@@ -1,0 +1,35 @@
+# Environment
+.env
+.env.local
+*.env
+!.env.example
+
+# Local-only Compose overrides (e.g. port remaps to avoid conflicts with
+# other projects on a developer's machine) - never part of the deliverable.
+docker-compose.override.yml
+
+# Python
+backend/.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local tooling state
+.claude/
+
+# Logs
+*.log
+npm-debug.log*
