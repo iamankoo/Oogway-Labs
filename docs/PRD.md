@@ -1,6 +1,6 @@
 # Product Requirements Document: Lenny Growth Assistant
 
-**Status:** Foundational draft, written during Phase 1, updated after Phase 2 (persistence + conversation UI) and Phase 3 (real agent/model layer). Scope, flows, and metrics will be refined as later phases (retrieval, Ship 30 for 30, artifacts) are implemented.
+**Status:** Foundational draft, written during Phase 1, updated after Phase 2 (persistence + conversation UI), Phase 3 (real agent/model layer), and Phase 4 (real grounded retrieval over Lenny's actual source material). Scope, flows, and metrics will be refined as later phases (Ship 30 for 30, artifacts) are implemented.
 
 ## Problem
 
@@ -25,9 +25,10 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 
 ## Assumptions
 
-- The user has, or will be given, a corpus of Lenny transcripts/essays to ingest (Phase 4).
+- The free official "Lenny's Data" starter pack (50 podcast transcripts + 10 newsletter posts, from `github.com/LennysNewsletter/lennys-newsletterpodcastdata`) is acceptable source material for this assignment's demo; the full paid archive (349+/289+) would work identically if an evaluator has access to it, but that was not what was actually ingested/verified here.
 - A single-user, local-first deployment model is acceptable for this assignment; multi-tenant auth is out of scope.
 - Ollama running locally is an acceptable default model provider for development and demonstration; a cloud provider is a pluggable alternative, not a requirement.
+- Lexical (BM25) retrieval, not semantic/vector search, is an acceptable grounding mechanism at this corpus size - see `docs/architecture.md` "Retrieval strategy" for the explicit tradeoff this accepted.
 
 ## Scope (by phase)
 
@@ -35,9 +36,9 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 |-------|-------|
 | 1 (done) | Architecture, FastAPI + React foundation, Docker Compose, health/readiness, design system, docs |
 | 2 (done) | PostgreSQL schema for users/conversations/messages, Alembic migrations, conversation API, real session/message persistence wired into a redesigned conversation UI |
-| 3 (this phase) | Real agent layer, built on the required **Pi Coding Agent** framework (`pi-coding-agent`, see `docs/architecture.md` "Agent framework choice"), + model provider abstraction (Ollama mandatory local, Anthropic Claude cloud), assistant reply generation and persistence, retry semantics, Markdown-rendered assistant messages, provider visibility in the UI |
-| 4 | Lenny transcript ingestion/RAG (Grounded QA), Ship 30 for 30 skill |
-| 5 | Artifact generation and a sanitized artifact viewer |
+| 3 (done) | Real agent layer, built on the required **Pi Coding Agent** framework (`pi-coding-agent`, see `docs/architecture.md` "Agent framework choice"), + model provider abstraction (Ollama mandatory local, Anthropic Claude cloud), assistant reply generation and persistence, retry semantics, Markdown-rendered assistant messages, provider visibility in the UI |
+| 4 (this phase) | Real Lenny knowledge base (ingestion of the official free source repository), BM25 retrieval service, grounded answers with structured per-message citations rendered via `SourceCard`, honest "no support found" behavior for unsupported questions |
+| 5 | Ship 30 for 30 skill, artifact generation, and a sanitized artifact viewer |
 | 6 | Resilience hardening (timeouts, retries, degraded-mode behavior) |
 | 7 | Comprehensive tests and final demo readiness |
 
@@ -51,8 +52,8 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 ## Core user flows
 
 1. **Start and persist a conversation** (Phase 2, implemented): user starts a new conversation, sends a message, refreshes the browser, and finds both the conversation and the message exactly as they left them.
-2. **Ask and get a real answer** (Phase 3, implemented): user asks a product/growth question → the configured model (Ollama locally, or Anthropic Claude if configured for cloud) generates a genuine response, reasoning from its own general knowledge, honest that it isn't yet grounded in Lenny's actual content → the reply persists and survives a refresh; a follow-up question is answered with the prior turn in context.
-3. **Grounded Q&A** (target end state, Phase 4, not yet implemented): the same flow as above, but the assistant retrieves relevant transcript passages first and answers with citations back to real source material.
+2. **Ask and get a real answer** (Phase 3, implemented): user asks a product/growth question → the configured model (Ollama locally, or Anthropic Claude if configured for cloud) generates a genuine response → the reply persists and survives a refresh; a follow-up question is answered with the prior turn in context.
+3. **Grounded Q&A** (Phase 4, implemented): the assistant retrieves relevant transcript/newsletter passages from the real ingested Lenny corpus before answering, and cites them as structured `SourceCard`s (episode title, guest, publication date, and a link when the source repository actually provides one) - never fabricated. When retrieval finds no adequate support, the assistant is instructed to say so rather than silently answer as if it were grounded.
 4. **Ship 30 for 30** (not yet implemented): user requests a 30-day shipping plan for a stated goal → assistant produces a structured, day-by-day artifact.
 5. **Artifact review** (not yet implemented): user asks for a framework or document → assistant generates it as an artifact in the right-hand panel, which the user can review and export.
 
@@ -80,15 +81,32 @@ A conversational assistant, backed by retrieval over Lenny's transcripts and ess
 - The assistant never claims its answers are grounded in Lenny's actual podcast/newsletter content - Phase 4 is what makes that true.
 - The UI visibly and honestly shows which provider/model is active, renders assistant Markdown safely (no raw HTML execution), and reads as a deliberate, premium product experience - not a generic AI chat template - per `docs/design.md`.
 
+## Acceptance criteria (Phase 4)
+
+- Ingestion (`python -m app.knowledge.ingest --source <path>`) against the real official Lenny's Data starter pack succeeds with zero failures and produces a verifiable, non-zero document/chunk count (`GET /api/knowledge/status`).
+- Running ingestion twice never creates duplicate documents or chunks (idempotency, verified by an automated test and by a real repeat run against the ingested corpus).
+- A supported product/growth question produces a grounded answer with one or more `SourceCard`s, each citing a real ingested document with real (never fabricated) title/guest/date/URL fields.
+- An unsupported/out-of-domain question never produces a fabricated citation - `sources` is empty and `grounded` is `false` at the API level, regardless of what the model's prose says.
+- A follow-up question's retrieval incorporates enough conversational context to resolve short references like "how about for B2B?" without embedding the entire conversation history into the query.
+- Sources persist across a browser refresh exactly like the message they're attached to.
+- No transcript content is ever executed or treated as an instruction - retrieved excerpts are explicitly labeled as untrusted reference data in the prompt sent to the model.
+
 ## Risks and trade-offs
 
 - **Local-only LLM quality**: Ollama-hosted open models may give weaker answers than a cloud frontier model. Mitigated by keeping the model-provider abstraction pluggable (implemented in Phase 3) rather than hard-coding Ollama everywhere.
 - **Cloud path verification gap**: no real Anthropic API key was available in the development environment, so the cloud provider's happy path (an actual generated reply) is unit-tested with a mocked SDK but was not exercised against the live Anthropic API - only its configuration and error-handling paths were verified live. See `docs/architecture.md` for exactly what was and wasn't exercised, and the README for how a engineer with credentials can complete that verification.
-- **Retrieval quality depends on corpus**: without real transcripts to ingest, Phase 4's RAG quality is bounded by whatever sample corpus is available.
-- **Scope discipline across 7 phases**: the biggest execution risk is scope creep - implementing later-phase functionality early creates rework. This is why Phase 1 stopped at architecture and UI shell, Phase 2 stopped at persistence without a model, and Phase 3 stops at a real but ungrounded assistant - deliberately, even though each would have been easy to keep going.
+- **Lexical retrieval, not semantic**: BM25 over exact vocabulary means a paraphrase that shares no words with the source material won't be found even if the topic is covered. Accepted deliberately at this corpus size and stack - see `docs/architecture.md` "Retrieval strategy" for the full reasoning and the stated upgrade path (Postgres FTS or pgvector) if the corpus grows substantially.
+- **Free starter-pack corpus, not the full archive**: retrieval quality and topic coverage are bounded by the 50 podcasts + 10 newsletters actually ingested and verified; the full paid archive was not available in this environment.
+- **Small local model's instruction-following**: `llama3.2:1b` doesn't always verbally hedge "no Lenny support for this" as consistently as instructed, even though the underlying citation data is never fabricated regardless of the model's wording - observed directly during real-data verification, documented in `docs/architecture.md` "Grounding prompt and empty retrieval".
+- **Scope discipline across 7 phases**: the biggest execution risk is scope creep - implementing later-phase functionality early creates rework. This is why each phase stopped at its stated scope, even though each would have been easy to keep going.
 
-## Initial success metrics (directional, to be made concrete once Phase 4-5 ship)
+## Success metric (knowledge quality, Phase 4)
+
+For a curated evaluation set of 5 representative questions (2 clearly-supported product/growth topics, 1 nuanced product question, 1 follow-up, 1 out-of-domain question), **grounded answers should contain at least one genuinely supporting, non-fabricated source, and unsupported questions should never receive a fabricated one.**
+
+**Measured result** (see `docs/architecture.md` "Retrieval strategy" and the Phase 4 completion report for the exact questions/scores): against the real ingested corpus, all clearly-supported and nuanced questions tested returned genuinely relevant sources (real episode titles/guests, BM25 scores in the 8-15 range); the out-of-domain and previously-problematic edge-case queries ("what's the best way to cook a lasagna", "tell me about the weather in Paris", "what is the airspeed velocity of an unladen swallow") returned **zero** sources after a real retrieval-precision bug (a single rare-word coincidental match outscoring genuine matches) was found and fixed during verification - **0 fabricated sources observed across all tested questions.**
+
+## Initial success metrics (directional, to be made concrete once Phase 5 ships)
 
 - Time-to-relevant-answer for a product/growth question, compared to manually searching the newsletter/podcast.
-- Fraction of answers with a traceable citation (retrieval grounding rate).
 - Whether a generated artifact (e.g. a Ship 30 for 30 plan) is usable without heavy editing.

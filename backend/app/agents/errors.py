@@ -46,3 +46,17 @@ class ModelTimeoutError(AgentError):
 class EmptyResponseError(AgentError):
     code = "empty_response"
     message = "The model returned an empty response. Please try again."
+
+
+class RetrievalError(AgentError):
+    """The knowledge base could not be searched (e.g. a database failure).
+
+    Distinct from an *empty* retrieval result (no relevant material
+    found, which is a normal outcome the agent handles by proceeding
+    without grounding - see ``docs/architecture.md`` "Empty retrieval").
+    This is a real failure and must surface as one, not silently become
+    an ungrounded answer with no indication anything went wrong.
+    """
+
+    code = "retrieval_failed"
+    message = "Couldn't search the Lenny knowledge base. Please try again."

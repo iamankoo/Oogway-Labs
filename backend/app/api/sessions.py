@@ -36,6 +36,7 @@ from app.db.session import get_db
 from app.logging_config import get_logger
 from app.services import conversations
 from app.services.conversations import NothingToRetryError, get_message_pending_retry
+from app.services.knowledge_retriever import KnowledgeRetriever
 from app.services.model_providers.factory import get_model_provider
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -58,8 +59,12 @@ async def _generate_assistant_reply(
     """
     try:
         provider = get_model_provider(settings)
+        retriever = KnowledgeRetriever(
+            db, top_k=settings.knowledge_top_k, min_relevance=settings.knowledge_min_relevance
+        )
         agent = GrowthAssistantAgent(
             provider,
+            retriever,
             max_context_messages=settings.max_context_messages,
             timeout_seconds=settings.model_timeout_seconds,
         )
@@ -85,6 +90,7 @@ async def _generate_assistant_reply(
             "latency_ms": result.latency_ms,
             "status": "ok",
         },
+        sources=result.sources,
     )
     logger.info(
         "assistant_generation_succeeded",
@@ -92,6 +98,9 @@ async def _generate_assistant_reply(
         provider=result.provider,
         model=result.model,
         latency_ms=result.latency_ms,
+        retrieved_count=len(result.sources),
+        source_ids=[str(s.chunk_id) for s in result.sources],
+        relevance_scores=[s.relevance for s in result.sources],
     )
     return assistant_message, None
 
@@ -117,7 +126,7 @@ async def get_session(session_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 @router.get("/{session_id}/messages", response_model=list[MessageOut])
 async def list_messages(session_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> list[MessageOut]:
     messages = await conversations.list_messages(db, user_id=DEMO_USER_ID, session_id=session_id)
-    return [MessageOut.model_validate(message) for message in messages]
+    return [MessageOut.from_message(message) for message in messages]
 
 
 @router.post("/{session_id}/messages", response_model=MessageCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -141,8 +150,8 @@ async def create_message(
         session = await conversations.get_session(db, user_id=DEMO_USER_ID, session_id=session_id)
 
     return MessageCreateResponse(
-        message=MessageOut.model_validate(user_message),
-        assistant_message=MessageOut.model_validate(assistant_message) if assistant_message else None,
+        message=MessageOut.from_message(user_message),
+        assistant_message=MessageOut.from_message(assistant_message) if assistant_message else None,
         session=SessionOut.model_validate(session),
         generation_error=generation_error,
     )
@@ -169,7 +178,7 @@ async def retry_message(session_id: uuid.UUID, db: AsyncSession = Depends(get_db
     session = await conversations.get_session(db, user_id=DEMO_USER_ID, session_id=session_id)
 
     return RetryResponse(
-        assistant_message=MessageOut.model_validate(assistant_message) if assistant_message else None,
+        assistant_message=MessageOut.from_message(assistant_message) if assistant_message else None,
         session=SessionOut.model_validate(session),
         generation_error=generation_error,
     )

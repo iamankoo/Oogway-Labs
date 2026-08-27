@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import get_settings  # noqa: E402
 from app.db.models import Base  # noqa: E402
+import app.db.knowledge_models  # noqa: E402,F401 - registers Phase 4 tables on Base.metadata
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

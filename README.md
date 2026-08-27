@@ -1,17 +1,36 @@
 # Lenny Growth Assistant
 
-An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews, essays, and podcast transcripts. This repository is being built in seven phases; **this README reflects Phase 1 + 2 + 3** - the foundation, conversation persistence, and now a real agent/model layer. Phase 4 adds retrieval grounding over Lenny's actual transcripts; later phases add Ship 30 for 30, artifact generation, and resilience/testing hardening. Claims below are scoped to what actually exists today.
+An AI growth advisor grounded in Lenny Rachitsky's product and growth interviews, essays, and podcast transcripts. This repository is being built in seven phases; **this README reflects Phase 1 + 2 + 3 + 4** - the foundation, conversation persistence, a real agent/model layer, and now real retrieval grounding over Lenny's actual source material. Later phases add Ship 30 for 30, artifact generation, and resilience/testing hardening. Claims below are scoped to what actually exists today.
 
-## What exists today (Phase 1 + 2 + 3)
+## What exists today (Phase 1 + 2 + 3 + 4)
 
 - A FastAPI backend with typed configuration, structured logging, centralized error handling, and `/health` / `/health/ready` endpoints (readiness now also checks the active model provider).
-- Real PostgreSQL persistence for conversations: `users` -> `sessions` -> `messages`, plus an `artifacts` table reserved for Phase 5, managed through Alembic migrations (see [Database](#database) below).
-- **A real agent layer** (`backend/app/agents/`) built on **Pi Coding Agent** (`pi-coding-agent`, the required agent framework - see `docs/architecture.md` "Agent framework choice") that builds conversation context from persisted messages and drives a real `pi_agent.agent.Agent`, which itself calls a **model provider abstraction** (`pi_agent.llm`) supporting both a local **Ollama** provider (mandatory for the demo, via Ollama's OpenAI-compatible endpoint) and a **cloud Anthropic Claude** provider, switchable purely via configuration - see [Model provider](#model-provider) below.
-- Sending a message now triggers a real assistant reply: the user's message is always persisted, the agent is invoked, and on success the assistant's reply is persisted too - on failure, the user's message is kept and a safe, retryable error is returned instead of a fabricated response.
-- A React + TypeScript + Tailwind frontend with a premium, editorially-inflected three-pane product shell, a real session sidebar, a subtle provider indicator ("● Local · llama3.2:3b"), safe Markdown-rendered assistant messages, a restrained "thinking" state, and inline retry on generation failure.
-- Docker Compose orchestrating the backend, frontend, PostgreSQL, and Ollama for local development, with the backend running pending migrations automatically on boot.
+- Real PostgreSQL persistence for conversations: `users` -> `sessions` -> `messages`, plus an `artifacts` table reserved for Phase 5, and (Phase 4) `knowledge_documents` / `knowledge_chunks` / `message_sources` for the knowledge base - all managed through Alembic migrations (see [Database](#database) below).
+- **A real agent layer** (`backend/app/agents/`) built on **Pi Coding Agent** (`pi-coding-agent`, the required agent framework - see `docs/architecture.md` "Agent framework choice") that retrieves grounding material for each turn, folds it into a real `pi_agent.agent.Agent`'s system prompt, and calls a **model provider abstraction** (`pi_agent.llm`) supporting both a local **Ollama** provider (mandatory for the demo) and a **cloud Anthropic Claude** provider, switchable purely via configuration - see [Model provider](#model-provider) below.
+- **A real knowledge base** (`backend/app/knowledge/`, `backend/app/services/knowledge_retriever.py`), ingested from the official free [Lenny's Data](https://github.com/LennysNewsletter/lennys-newsletterpodcastdata) starter pack (50 podcast transcripts + 10 newsletter posts) - see [Knowledge base](#knowledge-base) below for setup, ingestion, and how retrieval/grounding works.
+- Sending a message triggers a real assistant reply: the user's message is always persisted, the agent retrieves relevant Lenny material and generates a reply, and on success both the reply and its real (never fabricated) source citations are persisted - on failure, the user's message is kept and a safe, retryable error is returned instead of a fabricated response.
+- A React + TypeScript + Tailwind frontend with a premium, editorially-inflected three-pane product shell, a real session sidebar, a subtle provider indicator, safe Markdown-rendered assistant messages, a restrained "thinking" state, inline retry on generation failure, and (Phase 4) real `SourceCard`s shown under a grounded assistant reply.
+- Docker Compose orchestrating the backend, frontend, PostgreSQL, and Ollama for local development, with the backend running pending migrations automatically on boot. Knowledge-base ingestion is a separate, explicit, documented command - never part of `docker compose up`.
 
-**Not yet implemented (see "Known limitations" below):** transcript ingestion, retrieval/RAG, source citations, Ship 30 for 30, artifact generation. The assistant answers from its own reasoning only - it is explicitly instructed never to claim its answers are grounded in Lenny's actual podcast/newsletter content until Phase 4 connects that.
+**Not yet implemented (see "Known limitations" below):** Ship 30 for 30, artifact generation. Retrieval is lexical (BM25), not semantic/vector search - see `docs/architecture.md` "Retrieval strategy" for that tradeoff.
+
+## Knowledge base
+
+**Source**: the official, free ["Lenny's Data" starter pack](https://github.com/LennysNewsletter/lennys-newsletterpodcastdata) - 50 real podcast transcripts and 10 real newsletter posts, published by Lenny Rachitsky/Lenny's Newsletter. Its license permits personal use and building/publishing projects with it, but not redistributing the raw dataset files, so it is **not vendored into this repository** - fetch it yourself:
+
+```bash
+git clone https://github.com/LennysNewsletter/lennys-newsletterpodcastdata.git knowledge_source
+```
+
+Then run ingestion (inside the backend container, or locally against `DATABASE_URL`):
+
+```bash
+docker compose exec backend python -m app.knowledge.ingest --source /path/to/knowledge_source
+```
+
+(If running via Docker, copy the cloned folder into the backend container first, e.g. `docker cp knowledge_source lenny-growth-assistant-backend-1:/tmp/knowledge_source` and point `--source` at `/tmp/knowledge_source`.)
+
+Verify it worked: `curl http://localhost:8000/api/knowledge/status` should report a non-zero `document_count`/`chunk_count`. Ingestion is idempotent (safe to re-run) and only reprocesses files whose content actually changed - see `docs/architecture.md` "Knowledge base (Phase 4)" for the full pipeline, chunking strategy, retrieval algorithm, and grounding rules.
 
 ## Prerequisites
 

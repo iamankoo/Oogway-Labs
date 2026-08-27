@@ -1,5 +1,6 @@
 import ReactMarkdown, { type Components } from "react-markdown";
 
+import { SourceCard } from "@/components/ui/source-card";
 import type { Message } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -47,11 +48,7 @@ const markdownComponents: Components = {
   ),
 };
 
-/**
- * Renders one message. Built to support all three roles now so that
- * source cards under an assistant bubble (Phase 4) slot in without a
- * rework.
- */
+/** Renders one message, plus its citation cards when it's a grounded assistant reply (Phase 4). */
 export function MessageBubble({ message }: { message: Message }) {
   if (message.role === "system") {
     return (
@@ -64,7 +61,7 @@ export function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === "user";
 
   return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+    <div className={cn("flex flex-col", isUser ? "items-end" : "items-start")}>
       <div
         className={cn(
           "max-w-[75%] break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
@@ -75,6 +72,19 @@ export function MessageBubble({ message }: { message: Message }) {
       >
         {isUser ? message.content : <ReactMarkdown components={markdownComponents}>{message.content}</ReactMarkdown>}
       </div>
+      {message.grounded && (
+        <div className="mt-2 flex max-w-[75%] flex-col gap-2">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-muted">
+            Grounded in Lenny's Podcast · {message.sources.length} source
+            {message.sources.length === 1 ? "" : "s"}
+          </p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {message.sources.map((source) => (
+              <SourceCard key={source.source_id} source={source} />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

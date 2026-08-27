@@ -69,9 +69,12 @@ async def test_assistant_response_never_leaks_internal_fields(
     response = await client.post(f"/api/sessions/{session['id']}/messages", json={"content": "hi"})
     body = response.json()
 
-    allowed_keys = {"id", "session_id", "role", "content", "created_at"}
+    allowed_keys = {"id", "session_id", "role", "content", "created_at", "sources", "grounded"}
     assert set(body["assistant_message"].keys()) == allowed_keys
     assert set(body["message"].keys()) == allowed_keys
+    # This test's stub provider never grounds anything - no fabricated sources.
+    assert body["assistant_message"]["sources"] == []
+    assert body["assistant_message"]["grounded"] is False
 
 
 async def test_session_context_is_sent_to_the_provider(client: AsyncClient, stub_provider: _StubProvider) -> None:

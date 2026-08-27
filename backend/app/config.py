@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     cloud_model: str = "claude-opus-5"
     cloud_api_key: str | None = None
 
+    # --- Knowledge base retrieval (Phase 4) -------------------------------
+    # See docs/architecture.md "Retrieval parameters" for how these were
+    # picked against the actual ingested Lenny's Data corpus.
+    knowledge_top_k: int = 4
+    knowledge_min_relevance: float = 0.5
+
     # --- Frontend --------------------------------------------------------
     frontend_url: str = "http://localhost:5173"
 

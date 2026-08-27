@@ -1,0 +1,41 @@
+{
+  "schema_version": "2.0",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "podcasts": [
+    {
+      "title": "SYNTHETIC TEST FIXTURE: Onboarding with Test Guest Alpha",
+      "filename": "podcasts/test-guest-alpha.md",
+      "word_count": 120,
+      "date": "2026-01-05",
+      "description": "A synthetic test fixture episode about onboarding.",
+      "guest": "Test Guest Alpha",
+      "post_url": "https://example.com/fixtures/test-guest-alpha"
+    },
+    {
+      "title": "SYNTHETIC TEST FIXTURE: Pricing with Test Guest Beta",
+      "filename": "podcasts/test-guest-beta.md",
+      "word_count": 110,
+      "date": "2026-01-12",
+      "description": "A synthetic test fixture episode about pricing.",
+      "guest": "Test Guest Beta"
+    },
+    {
+      "title": "SYNTHETIC TEST FIXTURE: No URL Episode",
+      "filename": "podcasts/test-guest-gamma.md",
+      "word_count": 40,
+      "date": "2026-01-19",
+      "description": "A synthetic test fixture episode with no URL of any kind, to test that the UI never fabricates a link.",
+      "guest": "Test Guest Gamma"
+    }
+  ],
+  "newsletters": [
+    {
+      "title": "SYNTHETIC TEST FIXTURE: Growth Loops Essay",
+      "filename": "newsletters/test-newsletter-one.md",
+      "word_count": 60,
+      "date": "2026-01-08",
+      "subtitle": "A synthetic test fixture newsletter post.",
+      "post_url": "https://example.com/fixtures/test-newsletter-one"
+    }
+  ]
+}

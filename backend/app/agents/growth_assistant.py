@@ -8,17 +8,18 @@ tools to call, pi-agent's ReAct loop takes exactly one turn per user
 message (there is nothing for the model to call, so
 ``response.tool_calls`` is always empty and the loop returns
 immediately) - a deliberate, documented choice, not a limitation. Phase
-4/5 tool integrations (retrieval, artifacts) add real ``Tool`` entries to
-the registry without changing this class's shape.
+5's artifact generation adds real ``Tool`` entries to the registry
+without changing this class's shape.
 
 pi-agent owns the actual agent-level behavior this class delegates to:
 the model turn itself, transient-error retry with backoff, and
 conversation-history trimming (``AgentConfig.max_history_messages``).
-This class's own job is narrower: translate between this application's
-``Message`` ORM rows and pi-agent's neutral transcript, enforce an
-overall wall-clock timeout (pi-agent's client calls are synchronous), and
-normalize whatever exceptions surface into this application's own
-``AgentError`` taxonomy.
+This class's own job is: translate between this application's
+``Message`` ORM rows and pi-agent's neutral transcript, retrieve grounding
+material from the Lenny knowledge base (Phase 4) and fold it into the
+system prompt for this turn only, enforce an overall wall-clock timeout
+(pi-agent's client calls are synchronous), and normalize whatever
+exceptions surface into this application's own ``AgentError`` taxonomy.
 """
 
 from __future__ import annotations
@@ -41,9 +42,11 @@ from app.agents.errors import (
     ModelNotFoundError,
     ModelTimeoutError,
     ProviderUnavailableError,
+    RetrievalError,
 )
-from app.agents.prompts import SYSTEM_PROMPT
+from app.agents.prompts import SYSTEM_PROMPT, build_grounding_block
 from app.db.models import Message, MessageRole
+from app.services.knowledge_retriever import KnowledgeRetriever, RetrievedChunk
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,10 @@ class AgentResult:
     latency_ms: int
     input_tokens: int
     output_tokens: int
+    # Exactly what KnowledgeRetriever returned and what was folded into
+    # this turn's grounding prompt - never anything derived from the
+    # model's own output. See docs/architecture.md "Citation integrity".
+    sources: list[RetrievedChunk]
 
 
 def _map_provider_exception(exc: Exception) -> Exception:
@@ -77,16 +84,40 @@ def _map_provider_exception(exc: Exception) -> Exception:
 
 
 class GrowthAssistantAgent:
-    def __init__(self, provider: LLMProvider, *, max_context_messages: int, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        provider: LLMProvider,
+        retriever: KnowledgeRetriever,
+        *,
+        max_context_messages: int,
+        timeout_seconds: float,
+    ) -> None:
         self._provider = provider
+        self._retriever = retriever
         self._max_context_messages = max_context_messages
         self._timeout_seconds = timeout_seconds
 
-    def _build_pi_agent(self, history: list[Message]) -> tuple[PiAgent, str]:
-        relevant = [m for m in history if m.role in (MessageRole.user, MessageRole.assistant)]
-        if not relevant or relevant[-1].role != MessageRole.user:
-            raise ValueError("respond() requires the last message in history to be a pending user turn")
+    @staticmethod
+    def _build_retrieval_query(relevant: list[Message]) -> str:
+        """Deterministic, simple query strategy for follow-ups.
 
+        Combines the pending user message with the single immediately
+        preceding user message in the same session (if any) - enough to
+        resolve a short follow-up like "How does that apply to B2B?"
+        (which alone shares no keywords with an earlier "onboarding"
+        question) without embedding the whole conversation into every
+        retrieval query. Deliberately not an LLM-based rewrite: this
+        stays fast and deterministic on the mandatory local Ollama path,
+        and never introduces an assumption the user didn't actually type.
+        See docs/architecture.md "Follow-up retrieval strategy".
+        """
+        pending = relevant[-1]
+        prior_user_messages = [m for m in relevant[:-1] if m.role == MessageRole.user]
+        if not prior_user_messages:
+            return pending.content
+        return f"{prior_user_messages[-1].content} {pending.content}"
+
+    def _build_pi_agent(self, relevant: list[Message], *, system_prompt: str) -> tuple[PiAgent, str]:
         prior, latest = relevant[:-1], relevant[-1]
         neutral_history = [{"role": m.role.value, "content": m.content} for m in prior]
 
@@ -100,7 +131,7 @@ class GrowthAssistantAgent:
             # framework's Agent requires one.
             sandbox=Sandbox(tempfile.gettempdir()),
             config=AgentConfig(
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 max_iterations=1,
                 auto_approve=True,
                 stream=False,
@@ -113,7 +144,18 @@ class GrowthAssistantAgent:
         return agent, latest.content
 
     async def respond(self, history: list[Message]) -> AgentResult:
-        agent, latest_content = self._build_pi_agent(history)
+        relevant = [m for m in history if m.role in (MessageRole.user, MessageRole.assistant)]
+        if not relevant or relevant[-1].role != MessageRole.user:
+            raise ValueError("respond() requires the last message in history to be a pending user turn")
+
+        retrieval_query = self._build_retrieval_query(relevant)
+        try:
+            retrieved = await self._retriever.search(retrieval_query)
+        except Exception as exc:  # noqa: BLE001 - a real retrieval failure, not empty results
+            raise RetrievalError() from exc
+
+        system_prompt = f"{SYSTEM_PROMPT}\n\n{build_grounding_block(retrieved)}"
+        agent, latest_content = self._build_pi_agent(relevant, system_prompt=system_prompt)
 
         start = time.monotonic()
         try:
@@ -139,4 +181,5 @@ class GrowthAssistantAgent:
             latency_ms=latency_ms,
             input_tokens=agent.total_usage.input_tokens,
             output_tokens=agent.total_usage.output_tokens,
+            sources=retrieved,
         )

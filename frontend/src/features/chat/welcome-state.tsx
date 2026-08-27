@@ -22,9 +22,9 @@ export function WelcomeState({ onSelectPrompt }: WelcomeStateProps) {
           Product thinking, growth, and leadership - in conversation
         </h1>
         <p className="text-sm text-muted">
-          Explore how experienced product leaders reason through onboarding, growth, and hard product
-          decisions. Ask a question below to start a conversation - grounded answers from real interviews
-          arrive once retrieval is connected in a later phase.
+          Ask about onboarding, growth, product strategy, or leadership. When a relevant conversation from
+          Lenny's Podcast supports the answer, you'll see it cited below - and when the available material
+          doesn't cover a question, this assistant will tell you rather than guess.
         </p>
       </div>
       <div className="grid w-full gap-2 sm:grid-cols-2">

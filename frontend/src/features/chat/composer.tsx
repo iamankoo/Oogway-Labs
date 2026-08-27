@@ -53,7 +53,7 @@ export function Composer({ value, onChange, onSend, sending }: ComposerProps) {
         </Button>
       </div>
       <p className="mx-auto mt-2 max-w-2xl text-center text-xs text-muted" role={sendError ? "alert" : undefined}>
-        {sendError ?? "Answers aren't grounded in Lenny's podcast archive yet - that's coming in a later phase."}
+        {sendError ?? "Grounded in Lenny's Podcast when relevant material exists - otherwise this assistant will say so."}
       </p>
     </div>
   );

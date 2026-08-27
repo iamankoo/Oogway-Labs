@@ -215,6 +215,8 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
         role: "user",
         content,
         created_at: new Date().toISOString(),
+        sources: [],
+        grounded: false,
       };
       if (activeSessionIdRef.current === sessionId) {
         setMessages((current) => [...current, optimisticMessage]);

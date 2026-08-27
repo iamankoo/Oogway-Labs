@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
+from app.api.knowledge import router as knowledge_router
 from app.api.sessions import router as sessions_router
 from app.api.system import router as system_router
 from app.config import Settings, get_settings
@@ -59,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(sessions_router)
     app.include_router(system_router)
+    app.include_router(knowledge_router)
     # Future routers (artifacts) mount here once the corresponding
     # domain logic exists.
 

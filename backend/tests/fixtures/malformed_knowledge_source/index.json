@@ -1,0 +1,31 @@
+{
+  "schema_version": "2.0",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "podcasts": [
+    {
+      "title": "SYNTHETIC TEST FIXTURE: No Frontmatter",
+      "filename": "podcasts/no-frontmatter.md",
+      "word_count": 10,
+      "date": "2026-01-01",
+      "description": "Missing YAML frontmatter entirely.",
+      "guest": "Test Guest"
+    },
+    {
+      "title": "SYNTHETIC TEST FIXTURE: Empty Transcript",
+      "filename": "podcasts/empty-transcript.md",
+      "word_count": 0,
+      "date": "2026-01-01",
+      "description": "Frontmatter present but zero speaker turns.",
+      "guest": "Test Guest"
+    },
+    {
+      "title": "SYNTHETIC TEST FIXTURE: Missing File",
+      "filename": "podcasts/does-not-exist.md",
+      "word_count": 10,
+      "date": "2026-01-01",
+      "description": "Listed in index.json but the file does not exist on disk.",
+      "guest": "Test Guest"
+    }
+  ],
+  "newsletters": []
+}

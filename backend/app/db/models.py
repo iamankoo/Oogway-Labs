@@ -92,6 +92,15 @@ class Message(Base):
     extra_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     session: Mapped[ChatSession] = relationship(back_populates="messages")
+    # Phase 4: citations for an assistant message, if any were retrieved.
+    # Defined in app.db.knowledge_models (a different bounded concern);
+    # resolved by class name against the shared Base registry.
+    # lazy="selectin": always eager-loaded (one extra batched SELECT), so
+    # accessing `.sources` from async request-handling code never risks
+    # an implicit-IO lazy-load error - the async driver cannot do that.
+    sources: Mapped[list["MessageSource"]] = relationship(  # noqa: F821
+        back_populates="message", cascade="all, delete-orphan", order_by="MessageSource.rank", lazy="selectin"
+    )
 
 
 class Artifact(Base):

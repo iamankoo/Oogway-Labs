@@ -17,7 +17,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import SessionNotFoundError
+from app.db.knowledge_models import MessageSource
 from app.db.models import ChatSession, Message, MessageRole
+from app.services.knowledge_retriever import RetrievedChunk
 
 TITLE_MAX_LENGTH = 60
 DEFAULT_TITLE = "New conversation"
@@ -99,11 +101,40 @@ async def create_message(
     role: MessageRole,
     content: str,
     metadata: dict | None = None,
+    sources: list[RetrievedChunk] | None = None,
 ) -> tuple[Message, ChatSession]:
+    """Persist one message, optionally with its grounding citations.
+
+    ``sources`` are written as ``MessageSource`` rows in the same
+    transaction as the message itself - a message and its citations are
+    never partially persisted. Pass ``None`` (not ``[]``) for a message
+    that was never a candidate for grounding (user/system messages);
+    pass ``[]`` explicitly for an assistant message where retrieval ran
+    but found nothing, so the message is correctly created with zero
+    sources rather than skipping citation bookkeeping entirely.
+    """
     session = await get_session(db, user_id=user_id, session_id=session_id)
 
     message = Message(session_id=session_id, role=role, content=content, extra_metadata=metadata)
     db.add(message)
+    await db.flush()  # assigns message.id for the MessageSource rows below
+
+    for rank, chunk in enumerate(sources or [], start=1):
+        db.add(
+            MessageSource(
+                message_id=message.id,
+                document_id=chunk.document_id,
+                chunk_id=chunk.chunk_id,
+                rank=rank,
+                relevance=chunk.relevance,
+                source_type=chunk.source_type,
+                title=chunk.title,
+                guest=chunk.guest,
+                published_at=chunk.published_at,
+                source_url=chunk.source_url,
+                excerpt=chunk.text,
+            )
+        )
 
     if role == MessageRole.user and session.title == DEFAULT_TITLE:
         session.title = _derive_title_from_content(content)
@@ -112,6 +143,6 @@ async def create_message(
     session.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
-    await db.refresh(message)
+    await db.refresh(message, attribute_names=["sources"])
     await db.refresh(session)
     return message, session

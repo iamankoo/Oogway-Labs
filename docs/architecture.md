@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** Phase 1 + 2 + 3. Documents what is actually built plus the boundaries left for later phases to plug into. Update this document as each phase lands - it should never describe unimplemented behavior as if it exists.
+**Status:** Phase 1 + 2 + 3 + 4. Documents what is actually built plus the boundaries left for later phases to plug into. Update this document as each phase lands - it should never describe unimplemented behavior as if it exists.
 
 ## System overview
 
@@ -11,28 +11,32 @@ Frontend (React/Vite)
 FastAPI API  (backend/app/main.py, backend/app/api/)
     |
     v
-Agent layer  (backend/app/agents/)         <- Phase 3 / corrected
-    |  GrowthAssistantAgent: persona + conversation context
-    |  -> pi_agent.agent.Agent (pi-coding-agent, the required agent framework)
+Agent layer  (backend/app/agents/)         <- Phase 3 (corrected) + Phase 4
+    |  GrowthAssistantAgent:
+    |    1. builds a retrieval query from conversation context
+    |    2. KnowledgeRetriever.search() -> RetrievedChunk[] (Phase 4)
+    |    3. folds retrieved excerpts into this turn's system prompt
+    |    4. -> pi_agent.agent.Agent (pi-coding-agent, the required agent framework)
     |
-    +-- Skills + Tools                     <- Phase 4/5 (not yet built)
-    |     +-- Grounded QA (retrieval)
+    +-- Skills + Tools                     <- Phase 5 (not yet built)
     |     +-- Ship30
     |     +-- Artifact generation
     |
     v
-Retrieval / Knowledge Layer                <- Phase 4 (not yet built)
+Knowledge base  (backend/app/knowledge/, app/services/knowledge_retriever.py)   <- Phase 4
+    |  Offline ingestion (app.knowledge.ingest) parses + chunks Lenny's Data
+    |  into PostgreSQL; online KnowledgeRetriever (BM25, pure Python) reads it.
     |
     v
-PostgreSQL (persistence)  +  vector-capable index (later)
+PostgreSQL (persistence: sessions/messages + knowledge_documents/knowledge_chunks/message_sources)
     |
     v
-Model Provider Abstraction (pi_agent.llm, from pi-coding-agent)   <- corrected
+Model Provider Abstraction (pi_agent.llm, from pi-coding-agent)
     +-- OpenAIProvider(base_url=Ollama's /v1)  -> Ollama container (mandatory demo path)
     +-- AnthropicProvider -> Anthropic Claude API (cloud path)
 ```
 
-Phase 1 built everything above the "Agent layer" line, plus the raw infrastructure (PostgreSQL, Ollama) below it. Phase 2 filled in the PostgreSQL box with a real schema. Phase 3 built the agent layer and a model provider abstraction and wired them together: sending a message really invokes a configured LLM and persists its reply. A subsequent **Phase 3 compliance correction** (see "Agent framework choice" below) replaced Phase 3's hand-rolled `ModelProvider`/`GrowthAssistantAgent` internals with the assignment's actually-required agent framework, **pi-coding-agent**, without changing anything above or below that layer. The skills/retrieval layers remain deliberate placeholders - the agent has a persona and conversation history, but no external knowledge source yet.
+Phase 1 built everything above the "Agent layer" line, plus the raw infrastructure (PostgreSQL, Ollama) below it. Phase 2 filled in the PostgreSQL box with a real schema. Phase 3 built the agent layer and a model provider abstraction and wired them together. A subsequent **Phase 3 compliance correction** (see "Agent framework choice" below) replaced Phase 3's hand-rolled `ModelProvider`/`GrowthAssistantAgent` internals with the assignment's actually-required agent framework, **pi-coding-agent**. **Phase 4** (this update) adds a real knowledge base ingested from Lenny's Podcast/Newsletter source material, a retrieval service the agent queries every turn, and structured per-message citations - see "Knowledge base (Phase 4)" below for the full pipeline.
 
 ## Agent framework choice
 
@@ -222,6 +226,88 @@ On success, the logged/persisted `provider` value is the pi-coding-agent provide
 - **Retry while a request is still in flight**: the composer and retry button are both disabled while `isGenerating` is true, so the same click can't be issued twice from the same browser tab. Two truly concurrent requests to the same session (e.g. two tabs) are not explicitly locked against each other in Phase 3 - both would succeed independently, appending two assistant replies - which is an acceptable, non-corrupting outcome for a single-user local app, not a case that warrants distributed locking at this stage.
 - **Browser refresh mid-generation**: the backend keeps processing and persists the assistant reply regardless of whether the client is still connected (the request isn't cancelled on disconnect) - reloading the page and re-fetching messages shows the completed turn once it lands.
 
+## Knowledge base (Phase 4)
+
+### Source
+
+The knowledge base is [Lenny's Data](https://github.com/LennysNewsletter/lennys-newsletterpodcastdata), the official free "starter pack" repository published by Lenny Rachitsky/Lenny's Newsletter: **50 podcast transcripts and 10 newsletter posts**, in plain Markdown with a companion `index.json` carrying structured metadata (title, guest, publication date, post/YouTube URL, word count). This is real, permitted, official source material - not invented, not scraped, not a third-party mirror. Its `LICENSE.md` permits personal, non-commercial use and building/publishing projects with it, but **not redistributing the raw dataset files** - so the raw transcripts are never vendored into this repository; instead they're fetched by the evaluator/operator as a documented, reproducible setup step (`git clone` - see the root `README.md` "Knowledge base setup"), then ingested from wherever that checkout lives.
+
+Each podcast file's own YAML frontmatter (`title`/`date`/`guest`/`channel`/`description`) omits any URL at all - only `index.json` carries `post_url`/`youtube_url` per entry, and 14 of the 50 podcast entries have neither. `app.knowledge.parsing` therefore treats `index.json` as the authoritative metadata source (never the per-file frontmatter) and leaves `source_url`/`guest`/`published_at` as `None` whenever the source repository itself doesn't provide them - nothing is ever guessed or fabricated to fill a gap.
+
+### Ingestion (`app/knowledge/`)
+
+`python -m app.knowledge.ingest --source <path-to-the-cloned-repo>` (see README) does, per file listed in `index.json`:
+
+1. **Validate the path** (`app.knowledge.ingest._resolve_and_validate`): the file must resolve inside the given source directory (no `../` escape even if `index.json` itself were hostile), must end in `.md`, must exist, and must be under `MAX_SOURCE_FILE_BYTES` (5MB - real transcripts run 100-150KB).
+2. **Parse** (`app.knowledge.parsing`): split YAML frontmatter from the body; for a podcast, a state-machine parser (not a naive blank-line split - see its docstring for the "two speaker markers back to back with no text between them" edge case this handles correctly) extracts `Turn(speaker, timestamp, text)` from lines like `**Elena Verna** (00:00:06):`; for a newsletter, the body splits into paragraphs.
+3. **Hash** the raw file bytes (SHA-256) - this is the *only* signal ingestion uses to decide whether a file changed.
+4. **Chunk** (`app.knowledge.chunking`) - see "Chunking strategy" below.
+5. **Upsert**: look up an existing `KnowledgeDocument` by its natural key `(source_type, slug)` (`slug` = the source repo's own filename stem, e.g. `elena-verna-40`). If it exists with the same content hash, **skip entirely** (this is what makes re-running ingestion idempotent - verified by `tests/test_knowledge_ingest.py::test_repeat_ingestion_is_idempotent`). If new or changed, replace its chunks and update its metadata inside one transaction per document, so one bad file can never corrupt another's data or half-write a document.
+6. A malformed file (missing frontmatter, zero speaker turns, wrong extension, missing from disk) is logged and skipped - the run continues and reports a non-zero exit code, it never aborts partway through the corpus.
+
+**Refresh strategy**: re-running the exact same command against an updated checkout of the source repo (`git pull`, or a fresh clone of a newer snapshot) reprocesses only files whose content hash changed, preserving each unchanged document's row/id; changed documents keep their `id` and natural key but get entirely new chunks. There is no automatic remote polling - refresh is always an explicit, evaluator-run command, never something `docker compose up` triggers.
+
+### Data model
+
+```
+knowledge_documents (1) ----< knowledge_chunks (many)
+messages (1) ----< message_sources (many) >---- knowledge_chunks (0..1, nullable)
+```
+
+- **`knowledge_documents`**: `id`, `source_type` (`podcast`/`newsletter`), `slug` (natural-key half), `title`, `guest` (nullable), `published_at` (nullable date), `source_url` (nullable), `word_count`, `content_hash`, `ingested_at`, `updated_at`. Unique on `(source_type, slug)`.
+- **`knowledge_chunks`**: `id`, `document_id` (FK, cascade delete), `chunk_index` (ordering within the document), `text`, `speakers` (comma-joined, podcasts only), `char_count`, `created_at`. Indexed on `(document_id, chunk_index)`.
+- **`message_sources`**: one row per citation actually shown for one assistant message - `id`, `message_id` (FK, cascade delete), `document_id`/`chunk_id` (FK, `ON DELETE SET NULL`), `rank`, `relevance`, and a **denormalized copy** of `source_type`/`title`/`guest`/`published_at`/`source_url`/`excerpt`. The denormalization is deliberate: a citation shown to a user must keep displaying exactly what was retrieved at generation time even if the corpus is later re-ingested and that chunk changes or disappears - `SET NULL` (not cascade) on the FK preserves the historical citation's own copied fields regardless. See `app/db/knowledge_models.py` for the full docstrings.
+
+Migration: `backend/alembic/versions/e75557089cdb_knowledge_base.py`.
+
+### Chunking strategy (`app/knowledge/chunking.py`)
+
+Neither transcript type is split every N characters blindly:
+
+- **Podcasts**: turn-aware. A chunk accumulates whole speaker turns (never splitting one turn's text across two chunks) until it reaches a ~1200-character soft target (~200 words - large enough to carry a complete thought, small enough that the default top-k retrieval keeps the grounding context sent to the CPU-bound local model small and predictable). Consecutive chunks overlap by exactly one turn (the last turn of a chunk is repeated as the first turn of the next), so a fact sitting near a chunk boundary still appears whole in at least one chunk. Speaker names for every turn in a chunk are recorded in `KnowledgeChunk.speakers`, never lost.
+- **Newsletters**: the same packing algorithm over whole paragraphs instead of turns (essay prose has no speakers to preserve).
+
+Real numbers from the actual ingested corpus: 50 podcasts + 10 newsletters -> **60 documents, ~7,100 chunks** (podcasts average ~17,200 words each, so ~75-100 chunks per episode; newsletters average ~3,700 words, ~15-20 chunks each).
+
+### Retrieval strategy (`app/services/knowledge_retriever.py`)
+
+**Why BM25-in-Python, not pgvector/tsvector.** PostgreSQL already exists in this stack, so the two "use PostgreSQL capabilities" options considered were native full-text search (`tsvector`/`ts_rank`) and `pgvector` with embeddings. Both were rejected in favor of a pure-Python BM25 scorer over chunk rows loaded through the ORM, for two concrete reasons: (1) `to_tsvector`/`ts_rank_cd`/pgvector are Postgres-only - they cannot run against the in-memory SQLite database this project's entire test suite uses for hermetic, network-free tests (Phase 1-3's own established convention), so adopting either would have forced a second, Postgres-only test path; (2) embeddings would mean either a paid API (ruled out - "the evaluator must be able to run the submitted system without unexpectedly requiring a paid external embedding API") or downloading a new local embedding model, which the assignment also explicitly discourages doing automatically. At this corpus size (~7,100 chunks, ~5MB of text), scoring entirely in Python has no measurable latency cost and needs zero new infrastructure. **Tradeoff, stated plainly**: this is lexical, not semantic, search - a paraphrase that shares no vocabulary with the source material won't be found. At meaningfully larger scale, Postgres FTS or pgvector would be the right next step; that migration only touches `KnowledgeRetriever`, not its callers.
+
+**Query flow**: `KnowledgeRetriever.search(query)` first prefilters candidate chunks with a cheap SQL `ILIKE` OR-clause (so a query never has to hydrate every chunk in the corpus - `app.services.knowledge_retriever._candidate_chunks`), then scores the candidates in Python with standard Okapi BM25 (k1=1.5, b=0.75).
+
+**The precision mechanism that actually matters is a minimum-matched-terms gate, not the raw score threshold.** Empirically testing against the real ingested corpus surfaced a real BM25 failure mode: a single rare word coincidentally appearing once in one chunk (e.g. "lasagna", "Paris") gets a very high IDF weight and can outscore a chunk that genuinely matches most of a real product/growth query. Requiring at least `min(2, distinct_query_terms)` of the query's terms to actually appear in a candidate chunk before it can score at all closes this: an off-topic query like *"What is the best way to cook a lasagna?"* or *"Tell me about the weather in Paris"* now returns **zero** candidates (verified against the real corpus, not just the test fixture), while genuine multi-word product/growth questions are unaffected. An extended stopword list (generic filler like "best"/"way"/"tell"/pronouns) prevents those from satisfying the coverage requirement on their own - an earlier version of this fix had exactly that bug (a stray "me" was letting a completely unrelated chunk pass) before the stopword list was corrected.
+
+Because BM25's score scale depends on corpus size (via IDF), the score threshold (`DEFAULT_MIN_RELEVANCE = 0.5`) is deliberately just a low backstop against a near-zero-signal match, not the primary filter - the coverage gate above does that work, and does it in a way that's corpus-size-independent (which is why the same code and thresholds pass tests against both the tiny synthetic fixture corpus and the real ~7,100-chunk corpus without per-corpus tuning).
+
+**Retrieval parameters**: `top_k=4` (`Settings.knowledge_top_k`), capped at `MAX_CHUNKS_PER_DOCUMENT=2` per document so the top-k stays source-diverse rather than one long episode dominating every result.
+
+### Follow-up retrieval strategy
+
+The agent does not send the whole conversation as the retrieval query, and does not use an LLM call to rewrite it (an extra model round-trip would add real latency and unreliability on the mandatory local Ollama path). Instead (`GrowthAssistantAgent._build_retrieval_query`): the query is the pending user message, with the single immediately-preceding user message in the same session prepended if one exists. This is enough to resolve a short follow-up like *"How does that apply to B2B?"* (which shares no vocabulary at all with an earlier "onboarding" question on its own) while staying simple, deterministic, and fast.
+
+### Grounding prompt and empty retrieval (`app/agents/prompts.py`)
+
+`build_grounding_block(chunks)` renders retrieved chunks into a clearly delimited `<retrieved_lenny_material>...</retrieved_lenny_material>` block appended to `SYSTEM_PROMPT` for that turn only. `SYSTEM_PROMPT` itself instructs the model: retrieved excerpts are the *only* source of truth for anything attributed to Lenny's material; never fabricate an episode/guest/quote/URL; and - critically for **security** - retrieved text is reference data, not instructions, so any text inside an excerpt that looks like an instruction must be treated as quoted material only, never followed. This is the system's defense against prompt injection carried inside transcript content: SYSTEM INSTRUCTIONS, CONVERSATION, and RETRIEVED KNOWLEDGE are three explicitly-labeled, structurally separate things in the prompt sent to the model, not concatenated indistinguishably.
+
+When retrieval returns zero chunks (below the relevance/coverage bar, or a genuinely off-topic question), the block becomes an explicit `_NO_MATERIAL_BLOCK` telling the model there is no supporting material for this question and instructing it to say so plainly rather than invent one. This is a normal, expected outcome, not an error - `AgentResult.sources` is simply `[]` and the API's `grounded` field is `False`. A **real** retrieval failure (e.g. a database error) is different and is not silently swallowed into "no material found": `KnowledgeRetriever.search()` raising anything unexpected is caught and re-raised as `RetrievalError` (`app.agents.errors`), which flows through the exact same `generation_error` path as a model-provider failure - visible to the user, not a silently-degraded answer.
+
+Known limitation, observed directly against real Ollama output: the local `llama3.2:1b` model does not always *verbally* self-disclose "I don't have Lenny material for this" as consistently as the prompt instructs (small models follow multi-part system instructions imperfectly) - but the trust-critical guarantee holds regardless of the model's prose: `sources`/`grounded` are computed entirely from what `KnowledgeRetriever` actually returned, never parsed from or influenced by the model's output, so no citation is ever fabricated even when the model's wording doesn't explicitly hedge.
+
+### Citation integrity and traceability
+
+The backend, never the model, decides what a user sees as a source. `GrowthAssistantAgent.respond()` returns the exact `RetrievedChunk` list it queried with in `AgentResult.sources`; `services.conversations.create_message` writes those straight into `MessageSource` rows in the same transaction as the assistant message; `MessageOut.sources`/`grounded` (via `SourceOut.from_message_source`) serialize those rows, never anything derived from the model's text. A chunk -> document -> original-source chain is always resolvable: a `MessageSource` row carries `chunk_id`/`document_id` back to the live corpus (when still present) and a frozen copy of the display fields regardless. Every field on `SourceOut` (`guest`, `published_at`, `source_url`) is nullable and left `None` whenever the source repository didn't actually provide it for that episode - never invented to fill the UI.
+
+### Observability
+
+`assistant_generation_succeeded` (already logged in Phase 3) now also carries `retrieved_count`, `source_ids` (chunk ids, not content), and `relevance_scores` - enough to diagnose why a given answer was or wasn't grounded without ever logging transcript text itself. `GET /api/knowledge/status` (`app/api/knowledge.py`) is an internal diagnostics endpoint - document/chunk counts, per-source-type counts, last ingestion timestamp - for verifying ingestion actually ran, not a user-facing feature.
+
+### Known limitations
+
+- **Lexical, not semantic, retrieval** - a question phrased with entirely different vocabulary than the source material won't be found even if the topic is covered (e.g. "founder-market fit" vs. a transcript that only ever says "founder-product fit"). See "Retrieval strategy" above for the tradeoff this accepted and the stated upgrade path (Postgres FTS/pgvector).
+- **Free starter-pack corpus only** - 50 podcasts + 10 newsletters, not Lenny's full archive (349+ newsletters / 289+ podcasts, which sits behind a paid subscription at lennysdata.com); ingestion works identically against the full archive if an evaluator has access to it, but that was not exercised here.
+- **Small local model instruction-following** - see the grounding section above; the citation data is always trustworthy, the model's prose occasionally is looser about hedging than instructed.
+- **No reranking model** - the coverage-gated BM25 score is used directly as the final ranking; a learned reranker was judged unnecessary complexity at this corpus size, per the assignment's "prefer simple, reliable architecture" guidance.
+
 ## Conversation API
 
 All endpoints live under `/api` (`app/api/sessions.py`, `app/api/system.py`), return the shapes defined in `app/api/schemas.py` (never raw ORM objects or provider SDK objects), and use the Phase 1 error envelope for failures:
@@ -235,6 +321,9 @@ All endpoints live under `/api` (`app/api/sessions.py`, `app/api/system.py`), re
 | `POST` | `/api/sessions/{id}/messages` | Creates a **user** message (the request schema only accepts `role: "user"`), then attempts assistant generation. `201`. Returns `message`, `assistant_message` (nullable), `session`, `generation_error` (nullable) - see "Assistant generation failure semantics" above. |
 | `POST` | `/api/sessions/{id}/messages/retry` | Regenerates a reply for the pending user message. `200`, or `409 nothing_to_retry` if there is none. Returns `assistant_message`, `session`, `generation_error` - never a `message` field, since retry never creates one. |
 | `GET` | `/api/provider` | Returns `{provider, model}` reflecting the real active `Settings` - the source of truth for the frontend's provider indicator. |
+| `GET` | `/api/knowledge/status` | Internal diagnostics (Phase 4): document/chunk counts, last ingestion timestamp. Not part of the chat product surface. |
+
+`MessageOut` (Phase 4) additionally carries `sources: SourceOut[]` and a computed `grounded: bool` (`len(sources) > 0`) - populated for a grounded assistant message, `[]`/`false` for every other message.
 
 Title derivation is deterministic, not AI-generated: the first user message in a session becomes its title (truncated to 60 characters with an ellipsis if longer); later messages never overwrite an already-derived title. See `services.conversations._derive_title_from_content`.
 
@@ -293,6 +382,6 @@ No state-management library was added for this - `useState`/`useEffect`/`useCont
 
 ## Integration points for later phases
 
-- **Phase 4 (retrieval + Ship 30 for 30)**: add a retrieval client under `app/services/` and a query step in `GrowthAssistantAgent.respond` (or a new method) that fetches relevant transcript passages and folds them into the system/context before calling the provider - the provider abstraction and persistence path underneath don't change. Citations would ride in the assistant `Message`'s `extra_metadata` (already JSON) or a new field; `components/ui/source-card.tsx` already establishes the frontend visual foundation, unused until real retrieval exists. `SYSTEM_PROMPT` in `app/agents/prompts.py` must be updated at that point - it currently explicitly disclaims grounding, which stops being true once Phase 4 lands.
-- **Phase 5 (artifacts)**: the `artifacts` table (`app/db/models.py`) and `components/layout/artifact-panel.tsx` are the integration points - both already exist, one persists nothing yet and the other renders an empty state, until Phase 5 connects them.
-- **Phase 6 (resilience)**: `MODEL_TIMEOUT_SECONDS` and the `AgentError` taxonomy are the hooks for more sophisticated resilience (circuit breaking, provider fallback, backoff) without touching the API contract - `_generate_assistant_reply` is the single choke point where that logic would live.
+- **Phase 4 (retrieval + grounding) - done.** See "Knowledge base (Phase 4)" above for the full pipeline.
+- **Phase 5 (Ship 30 for 30 + artifacts)**: the `artifacts` table (`app/db/models.py`) and `components/layout/artifact-panel.tsx` are the integration points - both already exist, one persists nothing yet and the other renders an empty state, until Phase 5 connects them. A Ship 30 for 30 skill would naturally reuse the same `KnowledgeRetriever` this phase built.
+- **Phase 6 (resilience)**: `MODEL_TIMEOUT_SECONDS`, `AgentError` (now including `RetrievalError`), and `KnowledgeRetriever`'s BM25 approach are the hooks for more sophisticated resilience/scale (circuit breaking, provider fallback, backoff, a move to Postgres FTS/pgvector at a larger corpus size) without touching the API contract.
